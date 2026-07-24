@@ -604,7 +604,7 @@ def main():
     print()
     print("Will perform:")
     print("  - Rename files")
-    print("  - Move video files / copy SRT files (originals kept)")
+    print("  - Move video and SRT files (originals removed)")
     print("  - Move new series folders to library, or merge into existing ones")
 
     confirm = input("Proceed? (Y/N): ").strip().upper()
@@ -641,7 +641,7 @@ def main():
             if is_subtitle:
                 print(f"\n  📄 {f['original_name']}")
                 print(f"     {_GRAY}→ {dest_path}{_RESET}")
-                copy_with_progress(f["original_path"], dest_path)
+                move_with_progress(f["original_path"], dest_path)
             else:
                 print(f"\n  🎬 {f['original_name']}")
                 print(f"     {_GRAY}→ {dest_path}{_RESET}")

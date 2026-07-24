@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TV Organizer</title>
+<style>
+  /* Token system — inspired by a VHS spine label under CRT phosphor light.
+     Warm near-black "cassette shell" ground, tracked uppercase labels like
+     a label-maker font, amber/teal/gold as three "shelf tab" colors that
+     also carry meaning (source → scan → execute = left-to-right pipeline). */
+  :root{
+    --bg:#000000;
+    --panel:#1e1811;
+    --panel-2:#251e15;
+    --line:#3c3021;
+    --text:#f2e8d8;
+    --text-dim:#a3927a;
+    --accent:#f0a154;   /* amber phosphor — primary interactive color   */
+    --success:#6fb3a0;  /* teal — confirmed / already in library        */
+    --warn:#dcb24a;     /* gold — needs attention                       */
+    --err:#c2594a;      /* brick red — failure                          */
+    --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, "Roboto Mono", monospace;
+    --sans: -apple-system, "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; padding:0; background:var(--bg); color:var(--text); font-family:var(--sans); }
+  body{
+    padding:0 20px 60px;
+    background-image:
+      radial-gradient(ellipse 900px 400px at 50% -10%, #f0a15412 0%, transparent 60%);
+  }
+  .wrap{ max-width:980px; margin:0 auto; }
+
+  /* Decorative sprocket strip — a nod to the film reel this tool organizes */
+  .sprocket{
+    height:34px; margin:0 -20px 18px;
+    background-image: radial-gradient(circle, var(--line) 2.5px, transparent 3px);
+    background-size:26px 34px; background-position:center;
+    opacity:.55;
+    -webkit-mask-image: linear-gradient(to bottom, #000 0 1px, transparent 1px 33px, #000 33px);
+  }
+
+  header{
+    display:flex; align-items:center; justify-content:space-between; gap:16px;
+    margin-bottom:20px; flex-wrap:wrap;
+    background:var(--panel); border:1px solid var(--line); border-radius:6px;
+    padding:18px 22px; position:relative; overflow:hidden;
+  }
+  header::before{ content:""; position:absolute; inset-inline-start:0; top:0; bottom:0; width:5px; background:var(--accent); }
+  header h1{ font-size:19px; font-weight:800; margin:0; letter-spacing:.14em; text-transform:uppercase; }
+  header h1 span{ color:var(--accent); font-family:var(--mono); font-weight:700; }
+  header .sub{ color:var(--text-dim); font-size:12.5px; font-family:var(--mono); direction:ltr; text-align:right; }
+
+  .panel{
+    background:var(--panel); border:1px solid var(--line); border-radius:6px;
+    padding:20px 22px; margin-bottom:16px; position:relative; overflow:hidden;
+  }
+  .panel::before{ content:""; position:absolute; inset-inline-start:0; top:0; bottom:0; width:4px; }
+  .panel--a::before{ background:var(--accent); }
+  .panel--b::before{ background:var(--success); }
+  .panel--c::before{ background:var(--warn); }
+  .panel h2{
+    font-size:11.5px; text-transform:uppercase; letter-spacing:.14em; color:var(--text-dim);
+    margin:0 0 16px; font-weight:700; display:flex; align-items:center; gap:8px;
+  }
+  .panel h2 .step{ font-family:var(--mono); color:var(--text); background:var(--panel-2); border:1px solid var(--line);
+    border-radius:3px; padding:1px 6px; font-size:11px; letter-spacing:0; }
+
+  .folders{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:640px){ .folders{ grid-template-columns:1fr; } }
+  .folder-card{
+    background:var(--panel-2); border:1px solid var(--line); border-radius:5px; padding:14px 16px 16px;
+    border-top:2px solid var(--line);
+  }
+  .folder-card .role{
+    font-size:11px; color:var(--text-dim); margin-bottom:8px; text-transform:uppercase;
+    letter-spacing:.1em; font-weight:700; display:flex; align-items:center; gap:7px;
+  }
+  .folder-card .role .n{ font-family:var(--mono); color:var(--accent); border:1px solid var(--line); border-radius:3px; padding:0 5px; font-size:10.5px; }
+  .folder-card .name{ font-family:var(--mono); font-size:14px; direction:ltr; text-align:right; word-break:break-all; margin-bottom:10px; min-height:20px; }
+  .folder-card .name.empty{ color:var(--text-dim); font-style:italic; font-family:var(--sans); }
+  .status-row{ display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+  .dot{ width:8px; height:8px; border-radius:50%; background:var(--text-dim); flex-shrink:0; box-shadow:0 0 0 3px transparent; transition:box-shadow .2s; }
+  .dot.ok{ background:var(--success); box-shadow:0 0 0 3px #6fb3a022; }
+  .dot.warn{ background:var(--warn); box-shadow:0 0 0 3px #dcb24a22; }
+  .status-text{ font-size:12px; color:var(--text-dim); }
+
+  button{
+    font-family:var(--sans); font-size:12.5px; font-weight:700; letter-spacing:.02em;
+    border-radius:4px; border:1px solid var(--line);
+    background:var(--panel-2); color:var(--text); padding:9px 16px; cursor:pointer;
+    transition:border-color .15s, background .15s, transform .1s;
+  }
+  button:hover:not(:disabled){ border-color:var(--accent); }
+  button:active:not(:disabled){ transform:translateY(1px); }
+  button:disabled{ opacity:.4; cursor:not-allowed; }
+  button.primary{ background:var(--accent); color:#241505; border-color:var(--accent); }
+  button.primary:hover:not(:disabled){ background:#f5b578; }
+  button.ghost{ background:transparent; }
+  button.small{ padding:6px 12px; font-size:11.5px; }
+
+  .actions{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:4px; }
+  .actions label{ font-size:13px; color:var(--text-dim); display:flex; align-items:center; gap:6px; cursor:pointer; }
+  .actions input[type=checkbox]{ accent-color:var(--accent); }
+
+  .banner{ font-size:12.5px; padding:10px 14px; border-radius:5px; margin-top:12px; border:1px solid; display:none; }
+  .banner.show{ display:block; }
+  .banner.warn{ background:#2a2210; border-color:#4d3f1e; color:var(--warn); }
+  .banner.err{ background:#2a1613; border-color:#4d2620; color:var(--err); }
+
+  table{ width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12.5px; direction:ltr; text-align:left; }
+  th,td{ padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th{ color:var(--text-dim); font-family:var(--sans); font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; text-align:left; }
+  td.arrow{ color:var(--accent); padding:7px 4px; }
+  td.new{ color:var(--success); }
+  .series-list{ list-style:none; margin:0 0 16px; padding:0; font-size:13px; }
+  .series-list li{ display:flex; justify-content:space-between; gap:10px; padding:7px 0; border-bottom:1px dashed var(--line); }
+  .series-list li:last-child{ border-bottom:none; }
+  .series-list .sname{ font-family:var(--mono); direction:ltr; text-align:right; }
+  .series-list .stag{ font-size:10.5px; padding:2px 8px; border-radius:3px; white-space:nowrap; letter-spacing:.04em; }
+  .stag.newlib{ background:#1c2b25; color:var(--success); }
+  .stag.exists{ background:var(--panel-2); color:var(--text-dim); border:1px solid var(--line); }
+
+  #log{
+    font-family:var(--mono); font-size:12px; direction:ltr; text-align:left; color:var(--text);
+    background:#0f0b07;
+    background-image: repeating-linear-gradient(to bottom, #ffffff02 0 2px, transparent 2px 4px);
+    border:1px solid var(--line);
+    border-radius:5px; padding:14px 16px; max-height:340px; overflow-y:auto; white-space:pre-wrap; line-height:1.6;
+  }
+  #log .row{ margin-bottom:2px; }
+  #log .dim{ color:var(--text-dim); }
+  #log .ok{ color:var(--success); }
+  #log .warn{ color:var(--warn); }
+  #log .err{ color:var(--err); }
+  #log .cyan{ color:var(--accent); }
+  .bar{ display:inline-block; color:var(--accent); letter-spacing:-1px; }
+  .bar.done{ color:var(--success); }
+
+  .empty-hint{ color:var(--text-dim); font-size:13px; padding:6px 0; }
+  .summary{ font-size:13px; color:var(--text-dim); margin-top:12px; font-family:var(--mono); direction:ltr; text-align:right; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="sprocket"></div>
+
+  <header>
+    <h1>TV <span>Organizer</span></h1>
+  </header>
+
+  <div class="panel panel--a">
+    <h2><span class="step">01</span> תיקיות</h2>
+    <div class="folders">
+      <div class="folder-card">
+        <div class="role"><span class="n">SRC</span> מקור (קבצים חדשים)</div>
+        <div class="name empty" id="sourceName">לא נבחרה תיקייה</div>
+        <div class="status-row"><span class="dot" id="sourceDot"></span><span class="status-text" id="sourceStatus">—</span></div>
+        <button class="small" id="sourceBtn">בחר תיקייה…</button>
+      </div>
+      <div class="folder-card">
+        <div class="role"><span class="n">LIB</span> ספרייה (H:\TV Shows)</div>
+        <div class="name empty" id="libName">לא נבחרה תיקייה</div>
+        <div class="status-row"><span class="dot" id="libDot"></span><span class="status-text" id="libStatus">—</span></div>
+        <button class="small" id="libBtn">בחר תיקייה…</button>
+      </div>
+    </div>
+    <div class="actions" style="margin-top:14px;">
+      <button class="ghost small" id="resetBtn">שכח תיקיות שמורות</button>
+    </div>
+  </div>
+
+  <div class="panel panel--b">
+    <h2><span class="step">02</span> סריקה</h2>
+    <div class="actions">
+      <button class="primary" id="scanBtn" disabled>סרוק תיקיית מקור</button>
+      <label><input type="checkbox" id="tvdbCheck" checked> חפש שמות פרקים ב-TheTVDB</label>
+    </div>
+    <div class="banner warn" id="tvdbBanner">לא ניתן להתחבר ל-TheTVDB מהדפדפן (כנראה חסימת CORS) — הקבצים יאורגנו בלי שמות פרקים.</div>
+    <div id="scanResults"></div>
+  </div>
+
+  <div class="panel panel--c" id="executePanel" style="display:none;">
+    <h2><span class="step">03</span> ביצוע</h2>
+    <div class="actions">
+      <button class="primary" id="runBtn">בצע שינוי שם והעברה</button>
+      <span class="status-text" id="runHint">הקבצים יועברו (לא יועתקו) — המקור לא יישאר.</span>
+    </div>
+    <div id="log" style="margin-top:14px; display:none;"></div>
+    <div class="summary" id="summary"></div>
+  </div>
+
+</div>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------------
+// Config (ported from tvshows_organizer.py)
+// ---------------------------------------------------------------------------
+const VIDEO_EXT = new Set([".mkv",".mp4",".avi",".mov",".wmv",".m4v"]);
+const SUBTITLE_EXT = new Set([".srt"]);
+const EPISODE_PATTERN = /^(.*?)[.\s_-]+((?:S\d{1,2}E\d{1,2}|\d{1,2}x\d{2}))/i;
+const TVDB_API_KEY = "ec2b6fb8-6a17-41eb-b245-c34a922f910e";
+const HEBREW_RE = /[\u0590-\u05FF]/;
+
+// ---------------------------------------------------------------------------
+// IndexedDB — persist the two directory handles between sessions
+// ---------------------------------------------------------------------------
+function idbOpen(){
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open("tv-organizer", 1);
+    req.onupgradeneeded = () => req.result.createObjectStore("handles");
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbGet(key){
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("handles", "readonly").objectStore("handles").get(key);
+    tx.onsuccess = () => resolve(tx.result || null);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function idbSet(key, value){
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("handles", "readwrite").objectStore("handles").put(value, key);
+    tx.onsuccess = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function idbDel(key){
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("handles", "readwrite").objectStore("handles").delete(key);
+    tx.onsuccess = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Filename parsing / normalization (ported 1:1)
+// ---------------------------------------------------------------------------
+function cleanSeriesName(raw){
+  const parts = raw.split(/[.\s_-]+/).filter(Boolean)
+    .map(p => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase());
+  return [parts.join("."), parts.join(" ")];
+}
+function normalizeEpisodeTag(tag){
+  let m = tag.match(/^(\d{1,2})x(\d{2})$/i);
+  if (m) return `S${String(parseInt(m[1],10)).padStart(2,"0")}E${m[2]}`;
+  m = tag.match(/^S(\d{1,2})E(\d{1,2})$/i);
+  if (m) return `S${String(parseInt(m[1],10)).padStart(2,"0")}E${String(parseInt(m[2],10)).padStart(2,"0")}`;
+  return tag.toUpperCase();
+}
+function seasonFromTag(tag){
+  const m = tag.match(/^S(\d+)E\d+/i);
+  return m ? parseInt(m[1],10) : 1;
+}
+function parseFilename(filename){
+  const dot = filename.lastIndexOf(".");
+  if (dot <= 0) return null;
+  const name = filename.slice(0, dot);
+  const ext = filename.slice(dot).toLowerCase();
+  if (!VIDEO_EXT.has(ext) && !SUBTITLE_EXT.has(ext)) return null;
+  const m = EPISODE_PATTERN.exec(name);
+  if (!m) return null;
+  const [seriesFile, seriesFolder] = cleanSeriesName(m[1]);
+  const episodeTag = normalizeEpisodeTag(m[2]);
+  return { seriesFile, seriesFolder, episodeTag, ext };
+}
+function buildNewFilename(seriesFile, episodeTag, ext, episodeName){
+  let base = `${seriesFile}.${episodeTag}`;
+  if (episodeName) base = `${base}.${episodeName}`;
+  return ext === ".srt" ? `${base}.he${ext}` : `${base}${ext}`;
+}
+function isHebrew(text){ return HEBREW_RE.test(text); }
+function sanitizeEpisodeName(name){
+  name = name.replace(/[\\/:*?"<>|]/g, "");
+  name = name.replace(/[\s-]+/g, ".");
+  name = name.replace(/\.{2,}/g, ".");
+  return name.replace(/^\.+|\.+$/g, "");
+}
+function formatSize(n){
+  const units = ["B","KB","MB","GB"];
+  for (const u of units){ if (n < 1024) return `${n.toFixed(1)} ${u}`; n /= 1024; }
+  return `${n.toFixed(1)} TB`;
+}
+
+// ---------------------------------------------------------------------------
+// TheTVDB v4 lookup (ported, best-effort — degrades silently on CORS failure)
+// ---------------------------------------------------------------------------
+let tvdbToken = null;
+let tvdbBlocked = false;
+const tvdbShowCache = new Map();
+
+async function tvdbLogin(){
+  if (tvdbToken) return tvdbToken;
+  try{
+    const res = await fetch("https://api4.thetvdb.com/v4/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apikey: TVDB_API_KEY })
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    tvdbToken = data?.data?.token || null;
+    return tvdbToken;
+  } catch(e){
+    tvdbBlocked = true;
+    return null;
+  }
+}
+async function tvdbGet(url, retries=2){
+  const token = await tvdbLogin();
+  if (!token) return null;
+  for (let attempt=0; attempt<retries; attempt++){
+    try{
+      const res = await fetch(url, { headers: { "Authorization": `Bearer ${token}` } });
+      if (res.status === 429){
+        await new Promise(r => setTimeout(r, 1000*(attempt+1)));
+        continue;
+      }
+      if (res.status === 401 && attempt === 0){
+        tvdbToken = null;
+        await tvdbLogin();
+        continue;
+      }
+      if (!res.ok) return null;
+      return await res.json();
+    } catch(e){
+      tvdbBlocked = true;
+      return null;
+    }
+  }
+  return null;
+}
+async function searchShowId(query){
+  const data = await tvdbGet(`https://api4.thetvdb.com/v4/search?query=${encodeURIComponent(query)}&type=series`);
+  const results = data?.data;
+  if (!Array.isArray(results) || !results.length) return null;
+  const best = results.reduce((a,b) => (b.score||0) > (a.score||0) ? b : a);
+  return best?.tvdb_id ? { id: parseInt(best.tvdb_id,10), name: best.name || "" } : null;
+}
+async function getShowId(seriesFolder){
+  if (tvdbShowCache.has(seriesFolder)) return tvdbShowCache.get(seriesFolder);
+  const queries = [seriesFolder];
+  const stripped = seriesFolder.replace(/^(The|A|An)\s+/i, "").trim();
+  if (stripped && stripped !== seriesFolder) queries.push(stripped);
+  const noSuffix = seriesFolder.replace(/\s+(Us|Uk|Au|Ca|Nz|Ie|Za|De|Fr|Es|It|Jp|Kr|\d{4})$/i, "").trim();
+  if (noSuffix && noSuffix !== seriesFolder){
+    queries.push(noSuffix);
+    const noSuffixNoArt = noSuffix.replace(/^(The|A|An)\s+/i, "").trim();
+    if (noSuffixNoArt && noSuffixNoArt !== noSuffix) queries.push(noSuffixNoArt);
+  }
+  const words = seriesFolder.split(" ");
+  if (words.length > 2) queries.push(words.slice(0,2).join(" "));
+  const seen = new Set();
+  const uniq = queries.filter(q => !seen.has(q) && seen.add(q));
+
+  let result = null;
+  for (const q of uniq){
+    result = await searchShowId(q);
+    if (result || tvdbBlocked) break;
+  }
+  tvdbShowCache.set(seriesFolder, result);
+  return result;
+}
+async function findEpisodeViaFullList(showId, season, episode){
+  let page = 0;
+  while (true){
+    const data = await tvdbGet(`https://api4.thetvdb.com/v4/series/${showId}/episodes/official?page=${page}`);
+    const episodes = data?.data?.episodes;
+    if (!Array.isArray(episodes) || !episodes.length) return null;
+    const found = episodes.find(ep => ep.seasonNumber === season && ep.number === episode);
+    if (found) return found;
+    if (data?.links?.next == null) return null;
+    page += 1;
+    if (page > 50) return null; // safety cap
+  }
+}
+async function fetchEpisodeName(seriesFolder, episodeTag, log){
+  if (tvdbBlocked) return null;
+  if (isHebrew(seriesFolder)) return null;
+  const m = episodeTag.match(/^S(\d+)E(\d+)$/i);
+  if (!m) return null;
+  const season = parseInt(m[1],10), episode = parseInt(m[2],10);
+  const show = await getShowId(seriesFolder);
+  if (!show) { log(`[TheTVDB] ${seriesFolder} ${episodeTag} -> לא נמצאה סדרה תואמת`, "dim"); return null; }
+  const data = await findEpisodeViaFullList(show.id, season, episode);
+  const name = (data?.name || "").trim();
+  if (!name) { log(`[TheTVDB] ${seriesFolder} ${episodeTag} -> "${show.name}" נמצאה אך לא נמצא שם לפרק`, "dim"); return null; }
+  if (isHebrew(name)) return null;
+  const safe = sanitizeEpisodeName(name);
+  log(`[TheTVDB] ${seriesFolder} ${episodeTag} -> "${show.name}" = ${safe}`, "dim");
+  return safe;
+}
+
+// ---------------------------------------------------------------------------
+// Library folder resolution (ported)
+// ---------------------------------------------------------------------------
+async function findSeasonFolder(seriesLibDirHandle, seasonNum){
+  const patterns = [
+    new RegExp(`^season\\s*0*${seasonNum}$`, "i"),
+    new RegExp(`^series\\s*0*${seasonNum}$`, "i"),
+    new RegExp(`^s0*${seasonNum}$`, "i"),
+  ];
+  for await (const [name, handle] of seriesLibDirHandle.entries()){
+    if (handle.kind === "directory" && patterns.some(p => p.test(name))) return handle;
+  }
+  return null;
+}
+async function resolveLibraryDest(libraryDirHandle, seriesFolder, episodeTag){
+  const seasonNum = seasonFromTag(episodeTag);
+  let seriesLibDirHandle, exists = true;
+  try { seriesLibDirHandle = await libraryDirHandle.getDirectoryHandle(seriesFolder, {create:false}); }
+  catch(e){ exists = false; }
+
+  if (!exists){
+    seriesLibDirHandle = await libraryDirHandle.getDirectoryHandle(seriesFolder, {create:true});
+    return { dirHandle: seriesLibDirHandle, situation: "new_series" };
+  }
+  const seasonDir = await findSeasonFolder(seriesLibDirHandle, seasonNum);
+  if (seasonDir) return { dirHandle: seasonDir, situation: "season_found" };
+
+  let hasSubfolders = false;
+  for await (const [, handle] of seriesLibDirHandle.entries()){
+    if (handle.kind === "directory"){ hasSubfolders = true; break; }
+  }
+  if (hasSubfolders){
+    const newSeasonDir = await seriesLibDirHandle.getDirectoryHandle(`Season ${String(seasonNum).padStart(2,"0")}`, {create:true});
+    return { dirHandle: newSeasonDir, situation: "season_created" };
+  }
+  return { dirHandle: seriesLibDirHandle, situation: "flat_series" };
+}
+
+// ---------------------------------------------------------------------------
+// File move (fast path via handle.move() when supported, else copy+delete)
+// ---------------------------------------------------------------------------
+async function copyFileWithProgress(file, destDirHandle, destName, onProgress){
+  const total = file.size;
+  let copied = 0;
+  const start = performance.now();
+  const destHandle = await destDirHandle.getFileHandle(destName, {create:true});
+  const writable = await destHandle.createWritable();
+  const reader = file.stream().getReader();
+  let lastUpdate = 0;
+  while (true){
+    const { done, value } = await reader.read();
+    if (done) break;
+    await writable.write(value);
+    copied += value.byteLength;
+    const now = performance.now();
+    if (now - lastUpdate > 120 || copied === total){
+      onProgress(copied, total, start);
+      lastUpdate = now;
+    }
+  }
+  await writable.close();
+}
+async function moveFile(srcDirHandle, srcName, destDirHandle, destName, onProgress){
+  const srcHandle = await srcDirHandle.getFileHandle(srcName);
+  if (typeof srcHandle.move === "function"){
+    try{
+      await srcHandle.move(destDirHandle, destName);
+      onProgress(1, 1, performance.now(), true);
+      return;
+    } catch(e){ /* fall through */ }
+  }
+  const file = await srcHandle.getFile();
+  await copyFileWithProgress(file, destDirHandle, destName, onProgress);
+  await srcDirHandle.removeEntry(srcName);
+}
+async function isDirEmpty(dirHandle){
+  for await (const _ of dirHandle.keys()) return false;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// UI wiring
+// ---------------------------------------------------------------------------
+const els = {
+  sourceName: document.getElementById("sourceName"),
+  sourceDot: document.getElementById("sourceDot"),
+  sourceStatus: document.getElementById("sourceStatus"),
+  sourceBtn: document.getElementById("sourceBtn"),
+  libName: document.getElementById("libName"),
+  libDot: document.getElementById("libDot"),
+  libStatus: document.getElementById("libStatus"),
+  libBtn: document.getElementById("libBtn"),
+  resetBtn: document.getElementById("resetBtn"),
+  scanBtn: document.getElementById("scanBtn"),
+  tvdbCheck: document.getElementById("tvdbCheck"),
+  tvdbBanner: document.getElementById("tvdbBanner"),
+  scanResults: document.getElementById("scanResults"),
+  executePanel: document.getElementById("executePanel"),
+  runBtn: document.getElementById("runBtn"),
+  log: document.getElementById("log"),
+  summary: document.getElementById("summary"),
+};
+
+let sourceHandle = null;
+let libraryHandle = null;
+let scannedFiles = [];
+
+function logLine(text, cls){
+  els.log.style.display = "block";
+  const row = document.createElement("div");
+  row.className = "row" + (cls ? " " + cls : "");
+  row.textContent = text;
+  els.log.appendChild(row);
+  els.log.scrollTop = els.log.scrollHeight;
+  return row;
+}
+function renderBar(pct){
+  const width = 24;
+  const filled = Math.round(width * pct);
+  return "█".repeat(filled) + "░".repeat(width - filled);
+}
+function progressRow(){
+  const row = document.createElement("div");
+  row.className = "row";
+  els.log.style.display = "block";
+  els.log.appendChild(row);
+  els.log.scrollTop = els.log.scrollHeight;
+  return {
+    update(copied, total, start, instant){
+      const pct = total > 0 ? copied/total : 1;
+      if (instant){
+        row.innerHTML = `<span class="bar done">${renderBar(1)}</span> 100% <span class="dim">— מיידי (אותה תיקייה)</span>`;
+        return;
+      }
+      const elapsed = (performance.now() - start) / 1000;
+      const speed = elapsed > 0 ? copied/elapsed : 0;
+      const cls = pct >= 1 ? "done" : "";
+      row.innerHTML = `<span class="bar ${cls}">${renderBar(pct)}</span> ${(pct*100).toFixed(0)}% `
+        + `<span class="dim">${formatSize(copied)} / ${formatSize(total)} — ${formatSize(speed)}/s</span>`;
+      els.log.scrollTop = els.log.scrollHeight;
+    }
+  };
+}
+
+async function refreshFolderUI(){
+  if (sourceHandle){
+    els.sourceName.textContent = sourceHandle.name;
+    els.sourceName.classList.remove("empty");
+    const perm = await sourceHandle.queryPermission({ mode: "readwrite" });
+    if (perm === "granted"){
+      els.sourceDot.className = "dot ok"; els.sourceStatus.textContent = "מחובר";
+      els.sourceBtn.textContent = "החלף תיקייה…";
+    } else {
+      els.sourceDot.className = "dot warn"; els.sourceStatus.textContent = "נדרש אישור גישה";
+      els.sourceBtn.textContent = "אשר גישה";
+    }
+  } else {
+    els.sourceName.textContent = "לא נבחרה תיקייה"; els.sourceName.classList.add("empty");
+    els.sourceDot.className = "dot"; els.sourceStatus.textContent = "—";
+    els.sourceBtn.textContent = "בחר תיקייה…";
+  }
+  if (libraryHandle){
+    els.libName.textContent = libraryHandle.name;
+    els.libName.classList.remove("empty");
+    const perm = await libraryHandle.queryPermission({ mode: "readwrite" });
+    if (perm === "granted"){
+      els.libDot.className = "dot ok"; els.libStatus.textContent = "מחובר";
+      els.libBtn.textContent = "החלף תיקייה…";
+    } else {
+      els.libDot.className = "dot warn"; els.libStatus.textContent = "נדרש אישור גישה";
+      els.libBtn.textContent = "אשר גישה";
+    }
+  } else {
+    els.libName.textContent = "לא נבחרה תיקייה"; els.libName.classList.add("empty");
+    els.libDot.className = "dot"; els.libStatus.textContent = "—";
+    els.libBtn.textContent = "בחר תיקייה…";
+  }
+  els.scanBtn.disabled = !(sourceHandle && libraryHandle
+    && (await sourceHandle.queryPermission({mode:"readwrite"})) === "granted"
+    && (await libraryHandle.queryPermission({mode:"readwrite"})) === "granted");
+}
+
+async function connectFolder(kind){
+  const isSource = kind === "source";
+  const existing = isSource ? sourceHandle : libraryHandle;
+  if (existing){
+    // Try to just re-request permission first (no picker) if it's the same handle
+    const perm = await existing.queryPermission({ mode: "readwrite" });
+    if (perm !== "granted"){
+      const res = await existing.requestPermission({ mode: "readwrite" });
+      if (res === "granted"){ await refreshFolderUI(); return; }
+    }
+  }
+  try{
+    const handle = await window.showDirectoryPicker({ mode: "readwrite" });
+    if (isSource){ sourceHandle = handle; await idbSet("source", handle); }
+    else { libraryHandle = handle; await idbSet("library", handle); }
+    await refreshFolderUI();
+  } catch(e){ /* user cancelled */ }
+}
+
+els.sourceBtn.addEventListener("click", () => connectFolder("source"));
+els.libBtn.addEventListener("click", () => connectFolder("library"));
+els.resetBtn.addEventListener("click", async () => {
+  await idbDel("source"); await idbDel("library");
+  sourceHandle = null; libraryHandle = null;
+  scannedFiles = [];
+  els.scanResults.innerHTML = "";
+  els.executePanel.style.display = "none";
+  await refreshFolderUI();
+});
+
+(async function init(){
+  sourceHandle = await idbGet("source");
+  libraryHandle = await idbGet("library");
+  await refreshFolderUI();
+})();
+
+// ---------------------------------------------------------------------------
+// Scan
+// ---------------------------------------------------------------------------
+els.scanBtn.addEventListener("click", async () => {
+  els.scanBtn.disabled = true;
+  els.scanResults.innerHTML = "<div class=\"empty-hint\">סורק…</div>";
+  els.tvdbBanner.classList.remove("show");
+  tvdbBlocked = false;
+
+  const useTvdb = els.tvdbCheck.checked;
+  const found = [];
+  const epNameCache = new Map();
+
+  for await (const [name, handle] of sourceHandle.entries()){
+    if (handle.kind !== "file") continue;
+    const parsed = parseFilename(name);
+    if (!parsed) continue;
+    const key = `${parsed.seriesFolder}::${parsed.episodeTag}`;
+    if (useTvdb && !epNameCache.has(key)){
+      epNameCache.set(key, await fetchEpisodeName(parsed.seriesFolder, parsed.episodeTag, (t)=>{}));
+    }
+    const episodeName = useTvdb ? (epNameCache.get(key) || null) : null;
+    found.push({
+      handle, originalName: name,
+      seriesFile: parsed.seriesFile, seriesFolder: parsed.seriesFolder,
+      episodeTag: parsed.episodeTag, episodeName, ext: parsed.ext,
+      newName: buildNewFilename(parsed.seriesFile, parsed.episodeTag, parsed.ext, episodeName)
+    });
+  }
+
+  if (tvdbBlocked) els.tvdbBanner.classList.add("show");
+
+  // Sync SRT names to their paired video file
+  const videoMap = new Map();
+  for (const f of found) if (VIDEO_EXT.has(f.ext)) videoMap.set(`${f.seriesFolder}::${f.episodeTag}`, f.seriesFile);
+  for (const f of found){
+    if (SUBTITLE_EXT.has(f.ext)){
+      const key = `${f.seriesFolder}::${f.episodeTag}`;
+      if (videoMap.has(key)){
+        f.seriesFile = videoMap.get(key);
+        f.newName = buildNewFilename(f.seriesFile, f.episodeTag, f.ext, f.episodeName);
+      }
+    }
+  }
+
+  scannedFiles = found;
+  await renderScanResults();
+  els.scanBtn.disabled = false;
+});
+
+async function renderScanResults(){
+  if (!scannedFiles.length){
+    els.scanResults.innerHTML = "<div class=\"empty-hint\">לא נמצאו קבצי וידאו או כתוביות בפורמט מזוהה בתיקיית המקור.</div>";
+    els.executePanel.style.display = "none";
+    return;
+  }
+  const seriesSet = [...new Set(scannedFiles.map(f => f.seriesFolder))].sort();
+  const seriesRows = [];
+  for (const s of seriesSet){
+    const count = scannedFiles.filter(f => f.seriesFolder === s).length;
+    let exists = false;
+    try{ await libraryHandle.getDirectoryHandle(s, {create:false}); exists = true; } catch(e){}
+    seriesRows.push(`<li><span class="sname">${s}</span>
+      <span><span class="dim">${count} קבצים</span>
+      <span class="stag ${exists ? "exists" : "newlib"}">${exists ? "קיים בספרייה" : "חדש"}</span></span></li>`);
+  }
+
+  const tableRows = scannedFiles.map(f =>
+    `<tr><td>${f.originalName}</td><td class="arrow">→</td><td class="new">${f.newName}</td></tr>`
+  ).join("");
+
+  els.scanResults.innerHTML = `
+    <ul class="series-list">${seriesRows.join("")}</ul>
+    <table>
+      <thead><tr><th>קובץ מקורי</th><th></th><th>שם חדש</th></tr></thead>
+      <tbody>${tableRows}</tbody>
+    </table>`;
+  els.executePanel.style.display = "block";
+  els.log.style.display = "none";
+  els.log.innerHTML = "";
+  els.summary.textContent = "";
+}
+
+// ---------------------------------------------------------------------------
+// Execute
+// ---------------------------------------------------------------------------
+els.runBtn.addEventListener("click", async () => {
+  if (!scannedFiles.length) return;
+  if (!confirm(`להעביר ולשנות שם ל-${scannedFiles.length} קבצים? הפעולה תזיז את הקבצים המקוריים (לא תעתיק).`)) return;
+
+  els.runBtn.disabled = true;
+  els.log.innerHTML = ""; els.log.style.display = "block";
+  els.summary.textContent = "";
+
+  let success = 0;
+  const errors = [];
+  const stageDirs = new Map(); // seriesFolder -> stageDirHandle
+
+  for (const f of scannedFiles){
+    try{
+      const stageDirHandle = await sourceHandle.getDirectoryHandle(f.seriesFolder, {create:true});
+      stageDirs.set(f.seriesFolder, stageDirHandle);
+
+      let destExists = false;
+      try{ await stageDirHandle.getFileHandle(f.newName, {create:false}); destExists = true; } catch(e){}
+      if (destExists){
+        logLine(`⚠ קיים כבר ביעד, דולג: ${f.newName}`, "warn");
+        errors.push(f.originalName);
+        continue;
+      }
+
+      logLine(`${VIDEO_EXT.has(f.ext) ? "🎬" : "📄"} ${f.originalName}`, "cyan");
+      const pr = progressRow();
+      await moveFile(sourceHandle, f.originalName, stageDirHandle, f.newName,
+        (copied, total, start, instant) => pr.update(copied, total, start, instant));
+      success += 1;
+    } catch(e){
+      logLine(`✗ שגיאה ב-${f.originalName}: ${e.message || e}`, "err");
+      errors.push(f.originalName);
+    }
+  }
+
+  // Phase 2: move staged series folders into the library
+  if (stageDirs.size){
+    logLine("", "");
+    logLine("מעביר לספרייה…", "dim");
+    for (const [seriesFolder, stageDirHandle] of stageDirs){
+      const filenames = [];
+      for await (const [name, handle] of stageDirHandle.entries()){
+        if (handle.kind === "file") filenames.push(name);
+      }
+      for (const filename of filenames){
+        try{
+          const m = filename.match(/S\d{2}E\d{2}/i);
+          const epTag = m ? m[0].toUpperCase() : "S01E01";
+          const { dirHandle, situation } = await resolveLibraryDest(libraryHandle, seriesFolder, epTag);
+
+          let destExists = false;
+          try{ await dirHandle.getFileHandle(filename, {create:false}); destExists = true; } catch(e){}
+          if (destExists){
+            logLine(`⚠ קיים כבר בספרייה, דולג: ${filename}`, "warn");
+            continue;
+          }
+
+          logLine(`📦 ${filename}  [${situation}]`, "cyan");
+          const pr = progressRow();
+          await moveFile(stageDirHandle, filename, dirHandle, filename,
+            (copied, total, start, instant) => pr.update(copied, total, start, instant));
+        } catch(e){
+          logLine(`✗ שגיאה בהעברה לספרייה — ${filename}: ${e.message || e}`, "err");
+        }
+      }
+      try{
+        if (await isDirEmpty(stageDirHandle)){
+          await sourceHandle.removeEntry(seriesFolder, { recursive: false });
+        }
+      } catch(e){ /* leave it, not critical */ }
+    }
+  }
+
+  logLine("", "");
+  logLine(`הושלם: ${success} קבצים עובדו בהצלחה, ${errors.length} שגיאות/דילוגים.`, success && !errors.length ? "ok" : "dim");
+  els.summary.textContent = `${success} הצליחו · ${errors.length} שגיאות/דילוגים`;
+  els.runBtn.disabled = false;
+});
+</script>
+</body>
+</html>
