@@ -561,10 +561,6 @@ async function moveFile(srcDirHandle, srcName, destDirHandle, destName, onProgre
   await copyFileWithProgress(file, destDirHandle, destName, onProgress);
   await srcDirHandle.removeEntry(srcName);
 }
-async function isDirEmpty(dirHandle){
-  for await (const _ of dirHandle.keys()) return false;
-  return true;
-}
 
 // ---------------------------------------------------------------------------
 // UI wiring
@@ -829,24 +825,24 @@ els.runBtn.addEventListener("click", async () => {
 
   let success = 0;
   const errors = [];
-  const stageDirs = new Map(); // seriesFolder -> stageDirHandle
 
   for (const f of scannedFiles){
     try{
-      const stageDirHandle = await sourceHandle.getDirectoryHandle(f.seriesFolder, {create:true});
-      stageDirs.set(f.seriesFolder, stageDirHandle);
+      // Resolve straight to the final library destination — no local staging
+      // folder, so every file's bytes are read and written exactly once.
+      const { dirHandle, situation } = await resolveLibraryDest(libraryHandle, f.seriesFolder, f.episodeTag);
 
       let destExists = false;
-      try{ await stageDirHandle.getFileHandle(f.newName, {create:false}); destExists = true; } catch(e){}
+      try{ await dirHandle.getFileHandle(f.newName, {create:false}); destExists = true; } catch(e){}
       if (destExists){
-        logLine(`⚠ קיים כבר ביעד, דולג: ${f.newName}`, "warn");
+        logLine(`⚠ קיים כבר בספרייה, דולג: ${f.newName}`, "warn");
         errors.push(f.originalName);
         continue;
       }
 
-      logLine(`${VIDEO_EXT.has(f.ext) ? "🎬" : "📄"} ${f.originalName}`, "cyan");
+      logLine(`${VIDEO_EXT.has(f.ext) ? "🎬" : "📄"} ${f.originalName}  [${situation}]`, "cyan");
       const pr = progressRow();
-      await moveFile(sourceHandle, f.originalName, stageDirHandle, f.newName,
+      await moveFile(sourceHandle, f.originalName, dirHandle, f.newName,
         (copied, total, start, instant) => pr.update(copied, total, start, instant));
       success += 1;
       els.statProcessed.textContent = String(success);
@@ -854,44 +850,6 @@ els.runBtn.addEventListener("click", async () => {
     } catch(e){
       logLine(`✗ שגיאה ב-${f.originalName}: ${e.message || e}`, "err");
       errors.push(f.originalName);
-    }
-  }
-
-  // Phase 2: move staged series folders into the library
-  if (stageDirs.size){
-    logLine("", "");
-    logLine("מעביר לספרייה…", "dim");
-    for (const [seriesFolder, stageDirHandle] of stageDirs){
-      const filenames = [];
-      for await (const [name, handle] of stageDirHandle.entries()){
-        if (handle.kind === "file") filenames.push(name);
-      }
-      for (const filename of filenames){
-        try{
-          const m = filename.match(/S\d{2}E\d{2}/i);
-          const epTag = m ? m[0].toUpperCase() : "S01E01";
-          const { dirHandle, situation } = await resolveLibraryDest(libraryHandle, seriesFolder, epTag);
-
-          let destExists = false;
-          try{ await dirHandle.getFileHandle(filename, {create:false}); destExists = true; } catch(e){}
-          if (destExists){
-            logLine(`⚠ קיים כבר בספרייה, דולג: ${filename}`, "warn");
-            continue;
-          }
-
-          logLine(`📦 ${filename}  [${situation}]`, "cyan");
-          const pr = progressRow();
-          await moveFile(stageDirHandle, filename, dirHandle, filename,
-            (copied, total, start, instant) => pr.update(copied, total, start, instant));
-        } catch(e){
-          logLine(`✗ שגיאה בהעברה לספרייה — ${filename}: ${e.message || e}`, "err");
-        }
-      }
-      try{
-        if (await isDirEmpty(stageDirHandle)){
-          await sourceHandle.removeEntry(seriesFolder, { recursive: false });
-        }
-      } catch(e){ /* leave it, not critical */ }
     }
   }
 
