@@ -525,18 +525,21 @@ async function resolveLibraryDest(libraryDirHandle, seriesFolder, episodeTag){
 // File move (fast path via handle.move() when supported, else copy+delete)
 // ---------------------------------------------------------------------------
 async function copyFileWithProgress(file, destDirHandle, destName, onProgress){
+  // Large fixed chunks instead of the stream's default (small) chunk size —
+  // each write() is an async round-trip to the browser's file-system backend,
+  // so fewer/bigger writes means far less overhead for big video files.
+  const CHUNK = 64 * 1024 * 1024; // 64MB
   const total = file.size;
   let copied = 0;
   const start = performance.now();
   const destHandle = await destDirHandle.getFileHandle(destName, {create:true});
   const writable = await destHandle.createWritable();
-  const reader = file.stream().getReader();
   let lastUpdate = 0;
-  while (true){
-    const { done, value } = await reader.read();
-    if (done) break;
-    await writable.write(value);
-    copied += value.byteLength;
+  while (copied < total){
+    const end = Math.min(copied + CHUNK, total);
+    const buf = await file.slice(copied, end).arrayBuffer();
+    await writable.write(buf);
+    copied = end;
     const now = performance.now();
     if (now - lastUpdate > 120 || copied === total){
       onProgress(copied, total, start);
