@@ -125,10 +125,12 @@
   .stat-value{ font-family:var(--mono); font-size:19px; font-weight:700; line-height:1.1; }
   .stat-label{ font-size:11px; color:var(--text-dim); margin-top:2px; }
 
-  table{ width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12.5px; direction:ltr; text-align:left; margin-top:16px; }
-  th,td{ padding:8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  table{ width:100%; table-layout:fixed; border-collapse:collapse; font-family:var(--mono); font-size:12.5px; direction:ltr; text-align:left; margin-top:16px; }
+  th,td{ padding:8px; border-bottom:1px solid var(--line); vertical-align:top; word-break:break-all; overflow-wrap:anywhere; }
   th{ color:var(--text-dim); font-family:var(--sans); font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; text-align:left; }
-  td.arrow{ color:var(--blue); padding:8px 4px; }
+  th:first-child, td:first-child{ width:47%; }
+  th:last-child, td:last-child{ width:47%; }
+  td.arrow{ color:var(--blue); padding:8px 4px; width:6%; text-align:center; word-break:normal; }
   td.new{ color:var(--green); }
   .series-list{ list-style:none; margin:14px 0 0; padding:0; font-size:13px; }
   .series-list li{ display:flex; justify-content:space-between; gap:10px; padding:8px 0; border-bottom:1px dashed var(--line); }
@@ -166,6 +168,7 @@
 </style>
 </head>
 <body>
+
 <div class="wrap">
 
   <header>
