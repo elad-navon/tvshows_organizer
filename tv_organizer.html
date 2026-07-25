@@ -126,7 +126,7 @@
   .stat-label{ font-size:11px; color:var(--text-dim); margin-top:2px; }
 
   table{ width:100%; table-layout:fixed; border-collapse:collapse; font-family:var(--mono); font-size:12.5px; direction:ltr; text-align:left; margin-top:16px; }
-  th,td{ padding:8px; border-bottom:1px solid var(--line); vertical-align:top; word-break:break-all; overflow-wrap:anywhere; }
+  th,td{ padding:8px; border-bottom:1px solid var(--line); vertical-align:top; overflow-wrap:break-word; word-break:normal; }
   th{ color:var(--text-dim); font-family:var(--sans); font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; text-align:left; }
   th:first-child, td:first-child{ width:47%; }
   th:last-child, td:last-child{ width:47%; }
@@ -151,6 +151,7 @@
   #log{
     font-family:var(--mono); font-size:12px; direction:ltr; text-align:left; color:var(--text);
     padding:14px 16px; max-height:340px; overflow-y:auto; white-space:pre-wrap; line-height:1.6;
+    overflow-wrap:break-word; word-break:normal;
   }
   #log .row{ margin-bottom:2px; }
   #log .dim{ color:var(--text-dim); }
@@ -158,8 +159,11 @@
   #log .warn{ color:var(--warn); }
   #log .err{ color:var(--err); }
   #log .cyan{ color:var(--blue); }
-  .bar{ display:inline-block; color:var(--blue); letter-spacing:-1px; }
-  .bar.done{ color:var(--green); }
+  .pbar-wrap{ display:flex; align-items:center; gap:8px; margin:3px 0 5px; }
+  .pbar-track{ width:150px; height:6px; border-radius:3px; background:var(--line); overflow:hidden; flex-shrink:0; }
+  .pbar-fill{ height:100%; width:0%; background:var(--blue); border-radius:3px; }
+  .pbar-fill.done{ background:var(--green); }
+  .pbar-text{ font-size:11.5px; white-space:nowrap; }
 
   .empty-hint{ color:var(--text-dim); font-size:13px; padding:6px 0; }
   .summary{ font-size:13px; color:var(--text-dim); margin-top:12px; font-family:var(--mono); direction:ltr; text-align:right; }
@@ -601,6 +605,14 @@ let sourceHandle = null;
 let libraryHandle = null;
 let scannedFiles = [];
 
+function escapeHtml(s){
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+function breakable(s){
+  // Insert a break opportunity after each dot/underscore/hyphen so long
+  // filenames wrap between segments — never in the middle of one.
+  return escapeHtml(s).replace(/([._-])/g, "$1<wbr>");
+}
 function logLine(text, cls){
   els.logEmpty.style.display = "none";
   els.log.style.display = "block";
@@ -611,35 +623,48 @@ function logLine(text, cls){
   els.log.scrollTop = els.log.scrollHeight;
   return row;
 }
+function logLineHTML(html, cls){
+  els.logEmpty.style.display = "none";
+  els.log.style.display = "block";
+  const row = document.createElement("div");
+  row.className = "row" + (cls ? " " + cls : "");
+  row.innerHTML = html;
+  els.log.appendChild(row);
+  els.log.scrollTop = els.log.scrollHeight;
+  return row;
+}
 els.clearLogBtn.addEventListener("click", () => {
   els.log.innerHTML = "";
   els.log.style.display = "none";
   els.logEmpty.style.display = "block";
   els.summary.textContent = "";
 });
-function renderBar(pct){
-  const width = 24;
-  const filled = Math.round(width * pct);
-  return "█".repeat(filled) + "░".repeat(width - filled);
-}
 function progressRow(){
   const row = document.createElement("div");
   row.className = "row";
+  row.innerHTML = `<div class="pbar-wrap">
+      <div class="pbar-track"><div class="pbar-fill"></div></div>
+      <span class="pbar-text">0%</span>
+    </div>`;
   els.log.style.display = "block";
   els.log.appendChild(row);
   els.log.scrollTop = els.log.scrollHeight;
+  const fill = row.querySelector(".pbar-fill");
+  const text = row.querySelector(".pbar-text");
   return {
     update(copied, total, start, instant){
-      const pct = total > 0 ? copied/total : 1;
       if (instant){
-        row.innerHTML = `<span class="bar done">${renderBar(1)}</span> 100% <span class="dim">— מיידי (אותה תיקייה)</span>`;
+        fill.classList.add("done");
+        fill.style.width = "100%";
+        text.innerHTML = `100% <span class="dim">— מיידי (אותה תיקייה)</span>`;
         return;
       }
+      const pct = total > 0 ? copied/total : 1;
       const elapsed = (performance.now() - start) / 1000;
       const speed = elapsed > 0 ? copied/elapsed : 0;
-      const cls = pct >= 1 ? "done" : "";
-      row.innerHTML = `<span class="bar ${cls}">${renderBar(pct)}</span> ${(pct*100).toFixed(0)}% `
-        + `<span class="dim">${formatSize(copied)} / ${formatSize(total)} — ${formatSize(speed)}/s</span>`;
+      if (pct >= 1) fill.classList.add("done");
+      fill.style.width = `${(pct*100).toFixed(1)}%`;
+      text.innerHTML = `${(pct*100).toFixed(0)}% <span class="dim">${formatSize(copied)} / ${formatSize(total)} — ${formatSize(speed)}/s</span>`;
       els.log.scrollTop = els.log.scrollHeight;
     }
   };
@@ -793,7 +818,7 @@ async function renderScanResults(){
   }
 
   const tableRows = scannedFiles.map(f =>
-    `<tr><td>${f.originalName}</td><td class="arrow">→</td><td class="new">${f.newName}</td></tr>`
+    `<tr><td>${breakable(f.originalName)}</td><td class="arrow">→</td><td class="new">${breakable(f.newName)}</td></tr>`
   ).join("");
 
   els.scanResults.innerHTML = `
@@ -838,12 +863,12 @@ els.runBtn.addEventListener("click", async () => {
       let destExists = false;
       try{ await dirHandle.getFileHandle(f.newName, {create:false}); destExists = true; } catch(e){}
       if (destExists){
-        logLine(`⚠ קיים כבר בספרייה, דולג: ${f.newName}`, "warn");
+        logLineHTML(`⚠ קיים כבר בספרייה, דולג: ${breakable(f.newName)}`, "warn");
         errors.push(f.originalName);
         continue;
       }
 
-      logLine(`${VIDEO_EXT.has(f.ext) ? "🎬" : "📄"} ${f.originalName}  [${situation}]`, "cyan");
+      logLineHTML(`${VIDEO_EXT.has(f.ext) ? "🎬" : "📄"} ${breakable(f.originalName)}  [${situation}]`, "cyan");
       const pr = progressRow();
       await moveFile(sourceHandle, f.originalName, dirHandle, f.newName,
         (copied, total, start, instant) => pr.update(copied, total, start, instant));
@@ -851,7 +876,7 @@ els.runBtn.addEventListener("click", async () => {
       els.statProcessed.textContent = String(success);
       els.statProgress.textContent = `${Math.round((success/scannedFiles.length)*100)}%`;
     } catch(e){
-      logLine(`✗ שגיאה ב-${f.originalName}: ${e.message || e}`, "err");
+      logLineHTML(`✗ שגיאה ב-${breakable(f.originalName)}: ${escapeHtml(String(e.message || e))}`, "err");
       errors.push(f.originalName);
     }
   }
