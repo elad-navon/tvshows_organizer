@@ -133,9 +133,14 @@
   td.arrow{ color:var(--blue); padding:8px 4px; width:6%; text-align:center; word-break:normal; }
   td.new{ color:var(--green); }
   .series-list{ list-style:none; margin:14px 0 0; padding:0; font-size:13px; }
-  .series-list li{ display:flex; justify-content:space-between; gap:10px; padding:8px 0; border-bottom:1px dashed var(--line); }
+  .series-list li{ display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 0; border-bottom:1px dashed var(--line); }
   .series-list li:last-child{ border-bottom:none; }
   .series-list .sname{ font-family:var(--mono); direction:ltr; text-align:right; }
+  .series-thumb{
+    width:30px; height:44px; border-radius:4px; object-fit:cover; flex-shrink:0;
+    box-shadow:0 2px 6px #00000055; background:var(--field); border:1px solid var(--line);
+  }
+  .series-thumb-empty{ display:inline-block; }
   .series-list .stag{ font-size:10.5px; padding:2px 8px; border-radius:4px; white-space:nowrap; letter-spacing:.03em; }
   .stag.newlib{ background:#0f2b1c; color:var(--green); }
   .stag.exists{ background:var(--field); color:var(--text-dim); border:1px solid var(--line); }
@@ -387,6 +392,7 @@ function formatSize(n){
 let tvdbToken = null;
 let tvdbBlocked = false;
 const tvdbShowCache = new Map();
+let seriesPosterMap = new Map();
 
 async function tvdbLogin(){
   if (tvdbToken) return tvdbToken;
@@ -434,7 +440,12 @@ async function searchShowId(query){
   const results = data?.data;
   if (!Array.isArray(results) || !results.length) return null;
   const best = results.reduce((a,b) => (b.score||0) > (a.score||0) ? b : a);
-  return best?.tvdb_id ? { id: parseInt(best.tvdb_id,10), name: best.name || "" } : null;
+  if (!best?.tvdb_id) return null;
+  return {
+    id: parseInt(best.tvdb_id,10),
+    name: best.name || "",
+    posterUrl: best.image_url || best.image || null,
+  };
 }
 async function getShowId(seriesFolder){
   if (tvdbShowCache.has(seriesFolder)) return tvdbShowCache.get(seriesFolder);
@@ -481,6 +492,7 @@ async function fetchEpisodeName(seriesFolder, episodeTag, log){
   const season = parseInt(m[1],10), episode = parseInt(m[2],10);
   const show = await getShowId(seriesFolder);
   if (!show) { log(`[TheTVDB] ${seriesFolder} ${episodeTag} -> לא נמצאה סדרה תואמת`, "dim"); return null; }
+  if (show.posterUrl) seriesPosterMap.set(seriesFolder, show.posterUrl);
   const data = await findEpisodeViaFullList(show.id, season, episode);
   const name = (data?.name || "").trim();
   if (!name) { log(`[TheTVDB] ${seriesFolder} ${episodeTag} -> "${show.name}" נמצאה אך לא נמצא שם לפרק`, "dim"); return null; }
@@ -752,6 +764,7 @@ els.scanBtn.addEventListener("click", async () => {
   els.scanResults.innerHTML = "<div class=\"empty-hint\">סורק…</div>";
   els.tvdbBanner.classList.remove("show");
   tvdbBlocked = false;
+  seriesPosterMap = new Map();
   const t0 = performance.now();
 
   const useTvdb = els.tvdbCheck.checked;
@@ -812,8 +825,12 @@ async function renderScanResults(){
     const count = scannedFiles.filter(f => f.seriesFolder === s).length;
     let exists = false;
     try{ await libraryHandle.getDirectoryHandle(s, {create:false}); exists = true; } catch(e){}
-    seriesRows.push(`<li><span class="sname">${s}</span>
-      <span><span class="dim">${count} קבצים</span>
+    const posterUrl = seriesPosterMap.get(s);
+    const thumb = posterUrl
+      ? `<img class="series-thumb" src="${escapeHtml(posterUrl)}" alt="" loading="lazy" onerror="this.remove();">`
+      : `<span class="series-thumb series-thumb-empty"></span>`;
+    seriesRows.push(`<li>${thumb}<span class="sname">${s}</span>
+      <span style="margin-inline-start:auto;"><span class="dim">${count} קבצים</span>
       <span class="stag ${exists ? "exists" : "newlib"}">${exists ? "קיים בספרייה" : "חדש"}</span></span></li>`);
   }
 
