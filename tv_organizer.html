@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="he" dir="rtl">
+<html lang="en" dir="ltr">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -72,7 +72,7 @@
   }
   .folder-card .role .n{ color:var(--blue); background:#3b82f61a; border-radius:4px; padding:1px 6px; font-size:10px; }
   .folder-card .name{
-    font-family:var(--mono); font-size:13.5px; direction:ltr; text-align:right; word-break:break-all;
+    font-family:var(--mono); font-size:13.5px; direction:ltr; text-align:left; word-break:break-all;
     background:var(--field); border:1px solid var(--line); border-radius:6px; padding:9px 12px;
     margin-bottom:10px; min-height:20px;
   }
@@ -88,7 +88,7 @@
     border-radius:7px; border:1px solid var(--line);
     background:var(--field); color:var(--text); padding:9px 16px; cursor:pointer;
     transition:border-color .15s, background .15s, transform .1s, filter .15s;
-    display:inline-flex; align-items:center; justify-content:center; gap:7px;
+    display:inline-flex; align-items:center; justify-content:center; gap:7px; text-align:center;
   }
   button svg{ width:15px; height:15px; flex-shrink:0; }
   button:hover:not(:disabled){ filter:brightness(1.08); }
@@ -173,7 +173,7 @@
   .pbar-text{ font-size:11.5px; white-space:nowrap; }
 
   .empty-hint{ color:var(--text-dim); font-size:13px; padding:6px 0; }
-  .summary{ font-size:13px; color:var(--text-dim); margin-top:12px; font-family:var(--mono); direction:ltr; text-align:right; }
+  .summary{ font-size:13px; color:var(--text-dim); margin-top:12px; font-family:var(--mono); direction:ltr; text-align:left; }
   footer{ text-align:center; color:var(--text-dim); font-size:11.5px; margin-top:24px; }
   footer span{ color:var(--blue); }
 </style>
@@ -190,55 +190,46 @@
   </header>
 
   <div class="panel">
-    <h2><span class="step">1</span> תיקיות</h2>
+    <h2><span class="step">1</span> Folders</h2>
     <div class="folders">
       <div class="folder-card">
-        <div class="role"><span class="n">SRC</span> מקור (קבצים חדשים)</div>
-        <div class="name empty" id="sourceName">לא נבחרה תיקייה</div>
+        <div class="role"><span class="n">SRC</span> Source (new files)</div>
+        <div class="name empty" id="sourceName">No folder selected</div>
         <div class="status-row"><span class="dot" id="sourceDot"></span><span class="status-text" id="sourceStatus">—</span></div>
-        <button class="small" id="sourceBtn">
-          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>
-          בחר תיקייה…
-        </button>
+        <button class="small" id="sourceBtn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>Choose folder…</button>
       </div>
       <div class="folder-card">
-        <div class="role"><span class="n">LIB</span> ספרייה (H:\TV Shows)</div>
-        <div class="name empty" id="libName">לא נבחרה תיקייה</div>
+        <div class="role"><span class="n">LIB</span> Library (H:\TV Shows)</div>
+        <div class="name empty" id="libName">No folder selected</div>
         <div class="status-row"><span class="dot" id="libDot"></span><span class="status-text" id="libStatus">—</span></div>
-        <button class="small" id="libBtn">
-          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>
-          בחר תיקייה…
-        </button>
+        <button class="small" id="libBtn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>Choose folder…</button>
       </div>
     </div>
     <div class="actions" style="margin-top:14px;">
-      <button class="ghost small" id="resetBtn">שכח תיקיות שמורות</button>
+      <button class="ghost small" id="resetBtn">Forget saved folders</button>
     </div>
   </div>
 
   <div class="panel">
-    <h2><span class="step">2</span> סריקה</h2>
+    <h2><span class="step">2</span> Scan</h2>
     <div class="actions">
-      <button class="primary" id="scanBtn" disabled>
-        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-        סרוק תיקיית מקור
-      </button>
-      <label><input type="checkbox" id="tvdbCheck" checked> חפש שמות פרקים ב-TheTVDB</label>
+      <button class="primary" id="scanBtn" disabled><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>Scan source folder</button>
+      <label><input type="checkbox" id="tvdbCheck" checked> Look up episode names on TheTVDB</label>
     </div>
-    <div class="banner warn" id="tvdbBanner">לא ניתן להתחבר ל-TheTVDB מהדפדפן (כנראה חסימת CORS) — הקבצים יאורגנו בלי שמות פרקים.</div>
+    <div class="banner warn" id="tvdbBanner">Can't connect to TheTVDB from the browser (likely a CORS block) — files will be organized without episode names.</div>
 
     <div class="stat-row">
       <div class="stat-tile">
         <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg></div>
-        <div><div class="stat-value" id="statSeries">0</div><div class="stat-label">סדרות זוהו</div></div>
+        <div><div class="stat-value" id="statSeries">0</div><div class="stat-label">Series detected</div></div>
       </div>
       <div class="stat-tile">
         <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/></svg></div>
-        <div><div class="stat-value" id="statFiles">0</div><div class="stat-label">סה"כ קבצים</div></div>
+        <div><div class="stat-value" id="statFiles">0</div><div class="stat-label">Total files</div></div>
       </div>
       <div class="stat-tile">
         <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div>
-        <div><div class="stat-value" id="statTime">0s</div><div class="stat-label">זמן סריקה</div></div>
+        <div><div class="stat-value" id="statTime">0s</div><div class="stat-label">Scan time</div></div>
       </div>
     </div>
 
@@ -246,48 +237,42 @@
   </div>
 
   <div class="panel" id="executePanel" style="display:none;">
-    <h2><span class="step">3</span> ביצוע</h2>
+    <h2><span class="step">3</span> Execute</h2>
     <div class="actions">
-      <button class="execute" id="runBtn">
-        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09Z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2Z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>
-        בצע שינוי שם והעברה
-      </button>
-      <span class="status-text" id="runHint">הקבצים יועברו (לא יועתקו) — המקור לא יישאר.</span>
+      <button class="execute" id="runBtn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09Z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2Z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>Rename &amp; move</button>
+      <span class="status-text" id="runHint">Files will be moved (not copied) — the source will not remain.</span>
     </div>
 
     <div class="stat-row">
       <div class="stat-tile exec">
         <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></div>
-        <div><div class="stat-value" id="statPending">0</div><div class="stat-label">ממתינים</div></div>
+        <div><div class="stat-value" id="statPending">0</div><div class="stat-label">Pending</div></div>
       </div>
       <div class="stat-tile exec">
         <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/></svg></div>
-        <div><div class="stat-value" id="statProcessed">0</div><div class="stat-label">עובדו</div></div>
+        <div><div class="stat-value" id="statProcessed">0</div><div class="stat-label">Processed</div></div>
       </div>
       <div class="stat-tile exec">
         <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l4 2"/></svg></div>
-        <div><div class="stat-value" id="statExecTime">–</div><div class="stat-label">זמן ביצוע</div></div>
+        <div><div class="stat-value" id="statExecTime">–</div><div class="stat-label">Exec time</div></div>
       </div>
     </div>
 
     <div class="log-head" style="margin-top:16px;">
-      <h2 style="margin:0;">יומן פעולות</h2>
-      <button class="ghost small" id="clearLogBtn">
-        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6"/></svg>
-        נקה יומן
-      </button>
+      <h2 style="margin:0;">Activity Log</h2>
+      <button class="ghost small" id="clearLogBtn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6"/></svg>Clear log</button>
     </div>
     <div class="log-box">
       <div id="logEmpty">
-        <div class="hint-title">אין פעולות עדיין</div>
-        הלוג יופיע כאן ברגע שתתחיל לסרוק או לבצע
+        <div class="hint-title">No activity yet</div>
+        The log will appear here once you start scanning or executing
       </div>
       <div id="log" style="display:none;"></div>
     </div>
     <div class="summary" id="summary"></div>
   </div>
 
-  <footer>TV Organizer <span>·</span> גרסת דפדפן</footer>
+  <footer>TV Organizer <span>·</span> Browser version</footer>
 
 </div>
 
@@ -493,11 +478,11 @@ async function fetchEpisodeName(seriesFolder, episodeTag, log){
   if (!m) return null;
   const season = parseInt(m[1],10), episode = parseInt(m[2],10);
   const show = await getShowId(seriesFolder);
-  if (!show) { log(`[TheTVDB] ${seriesFolder} ${episodeTag} -> לא נמצאה סדרה תואמת`, "dim"); return null; }
+  if (!show) { log(`[TheTVDB] ${seriesFolder} ${episodeTag} -> no matching series found`, "dim"); return null; }
   if (show.posterUrl) seriesPosterMap.set(seriesFolder, show.posterUrl);
   const data = await findEpisodeViaFullList(show.id, season, episode);
   const name = (data?.name || "").trim();
-  if (!name) { log(`[TheTVDB] ${seriesFolder} ${episodeTag} -> "${show.name}" נמצאה אך לא נמצא שם לפרק`, "dim"); return null; }
+  if (!name) { log(`[TheTVDB] ${seriesFolder} ${episodeTag} -> "${show.name}" found but no episode name`, "dim"); return null; }
   if (isHebrew(name)) return null;
   const safe = sanitizeEpisodeName(name);
   log(`[TheTVDB] ${seriesFolder} ${episodeTag} -> "${show.name}" = ${safe}`, "dim");
@@ -670,7 +655,7 @@ function progressRow(){
       if (instant){
         fill.classList.add("done");
         fill.style.width = "100%";
-        text.innerHTML = `100% <span class="dim">— מיידי (אותה תיקייה)</span>`;
+        text.innerHTML = `100% <span class="dim">— instant (same folder)</span>`;
         return;
       }
       const pct = total > 0 ? copied/total : 1;
@@ -690,32 +675,32 @@ async function refreshFolderUI(){
     els.sourceName.classList.remove("empty");
     const perm = await sourceHandle.queryPermission({ mode: "readwrite" });
     if (perm === "granted"){
-      els.sourceDot.className = "dot ok"; els.sourceStatus.textContent = "מחובר";
-      els.sourceBtn.textContent = "החלף תיקייה…";
+      els.sourceDot.className = "dot ok"; els.sourceStatus.textContent = "Connected";
+      els.sourceBtn.textContent = "Change folder…";
     } else {
-      els.sourceDot.className = "dot warn"; els.sourceStatus.textContent = "נדרש אישור גישה";
-      els.sourceBtn.textContent = "אשר גישה";
+      els.sourceDot.className = "dot warn"; els.sourceStatus.textContent = "Access permission required";
+      els.sourceBtn.textContent = "Grant access";
     }
   } else {
-    els.sourceName.textContent = "לא נבחרה תיקייה"; els.sourceName.classList.add("empty");
+    els.sourceName.textContent = "No folder selected"; els.sourceName.classList.add("empty");
     els.sourceDot.className = "dot"; els.sourceStatus.textContent = "—";
-    els.sourceBtn.textContent = "בחר תיקייה…";
+    els.sourceBtn.textContent = "Choose folder…";
   }
   if (libraryHandle){
     els.libName.textContent = libraryHandle.name;
     els.libName.classList.remove("empty");
     const perm = await libraryHandle.queryPermission({ mode: "readwrite" });
     if (perm === "granted"){
-      els.libDot.className = "dot ok"; els.libStatus.textContent = "מחובר";
-      els.libBtn.textContent = "החלף תיקייה…";
+      els.libDot.className = "dot ok"; els.libStatus.textContent = "Connected";
+      els.libBtn.textContent = "Change folder…";
     } else {
-      els.libDot.className = "dot warn"; els.libStatus.textContent = "נדרש אישור גישה";
-      els.libBtn.textContent = "אשר גישה";
+      els.libDot.className = "dot warn"; els.libStatus.textContent = "Access permission required";
+      els.libBtn.textContent = "Grant access";
     }
   } else {
-    els.libName.textContent = "לא נבחרה תיקייה"; els.libName.classList.add("empty");
+    els.libName.textContent = "No folder selected"; els.libName.classList.add("empty");
     els.libDot.className = "dot"; els.libStatus.textContent = "—";
-    els.libBtn.textContent = "בחר תיקייה…";
+    els.libBtn.textContent = "Choose folder…";
   }
   els.scanBtn.disabled = !(sourceHandle && libraryHandle
     && (await sourceHandle.queryPermission({mode:"readwrite"})) === "granted"
@@ -763,7 +748,7 @@ els.resetBtn.addEventListener("click", async () => {
 // ---------------------------------------------------------------------------
 els.scanBtn.addEventListener("click", async () => {
   els.scanBtn.disabled = true;
-  els.scanResults.innerHTML = "<div class=\"empty-hint\">סורק…</div>";
+  els.scanResults.innerHTML = "<div class=\"empty-hint\">Scanning…</div>";
   els.tvdbBanner.classList.remove("show");
   tvdbBlocked = false;
   seriesPosterMap = new Map();
@@ -817,7 +802,7 @@ async function renderScanResults(){
   els.statSeries.textContent = String(new Set(scannedFiles.map(f => f.seriesFolder)).size);
 
   if (!scannedFiles.length){
-    els.scanResults.innerHTML = "<div class=\"empty-hint\">לא נמצאו קבצי וידאו או כתוביות בפורמט מזוהה בתיקיית המקור.</div>";
+    els.scanResults.innerHTML = "<div class=\"empty-hint\">No recognized video or subtitle files found in the source folder.</div>";
     els.executePanel.style.display = "none";
     return;
   }
@@ -827,8 +812,8 @@ async function renderScanResults(){
     const count = scannedFiles.filter(f => f.seriesFolder === s).length;
     let exists = false;
     try{ await libraryHandle.getDirectoryHandle(s, {create:false}); exists = true; } catch(e){}
-    seriesRows.push(`<li><span class="sname">${escapeHtml(s)}</span><span class="scount">${count} קבצים</span>
-      <span class="stag ${exists ? "exists" : "newlib"}">${exists ? "קיים בספרייה" : "חדש"}</span></li>`);
+    seriesRows.push(`<li><span class="sname">${escapeHtml(s)}</span><span class="scount">${count} files</span>
+      <span class="stag ${exists ? "exists" : "newlib"}">${exists ? "Exists in library" : "New"}</span></li>`);
   }
 
   const episodeGroups = new Map(); // seriesFolder::episodeTag -> files[]
@@ -853,7 +838,7 @@ async function renderScanResults(){
   els.scanResults.innerHTML = `
     <ul class="series-list">${seriesRows.join("")}</ul>
     <table>
-      <thead><tr><th></th><th>קובץ מקורי</th><th></th><th>שם חדש</th></tr></thead>
+      <thead><tr><th></th><th>Original file</th><th></th><th>New name</th></tr></thead>
       <tbody>${tableRows}</tbody>
     </table>`;
   els.executePanel.style.display = "block";
@@ -871,7 +856,7 @@ async function renderScanResults(){
 // ---------------------------------------------------------------------------
 els.runBtn.addEventListener("click", async () => {
   if (!scannedFiles.length) return;
-  if (!confirm(`להעביר ולשנות שם ל-${scannedFiles.length} קבצים? הפעולה תזיז את הקבצים המקוריים (לא תעתיק).`)) return;
+  if (!confirm(`Move and rename ${scannedFiles.length} files? This will move the original files (not copy them).`)) return;
 
   els.runBtn.disabled = true;
   els.log.innerHTML = ""; els.log.style.display = "none"; els.logEmpty.style.display = "block";
@@ -899,7 +884,7 @@ els.runBtn.addEventListener("click", async () => {
       let destExists = false;
       try{ await dirHandle.getFileHandle(f.newName, {create:false}); destExists = true; } catch(e){}
       if (destExists){
-        logLineHTML(`⚠ קיים כבר בספרייה, דולג: ${breakable(f.newName)}`, "warn");
+        logLineHTML(`⚠ Already exists in library, skipped: ${breakable(f.newName)}`, "warn");
         errors.push(f.originalName);
         updateExecStats();
         continue;
@@ -912,7 +897,7 @@ els.runBtn.addEventListener("click", async () => {
       success += 1;
       updateExecStats();
     } catch(e){
-      logLineHTML(`✗ שגיאה ב-${breakable(f.originalName)}: ${escapeHtml(String(e.message || e))}`, "err");
+      logLineHTML(`✗ Error processing ${breakable(f.originalName)}: ${escapeHtml(String(e.message || e))}`, "err");
       errors.push(f.originalName);
       updateExecStats();
     }
