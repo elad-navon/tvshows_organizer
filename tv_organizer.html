@@ -88,7 +88,7 @@
     border-radius:7px; border:1px solid var(--line);
     background:var(--field); color:var(--text); padding:9px 16px; cursor:pointer;
     transition:border-color .15s, background .15s, transform .1s, filter .15s;
-    display:inline-flex; align-items:center; gap:7px;
+    display:inline-flex; align-items:center; justify-content:center; gap:7px;
   }
   button svg{ width:15px; height:15px; flex-shrink:0; }
   button:hover:not(:disabled){ filter:brightness(1.08); }
@@ -266,7 +266,7 @@
       </div>
       <div class="stat-tile exec">
         <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l4 2"/></svg></div>
-        <div><div class="stat-value" id="statProgress">0%</div><div class="stat-label">התקדמות</div></div>
+        <div><div class="stat-value" id="statExecTime">–</div><div class="stat-label">זמן ביצוע</div></div>
       </div>
     </div>
 
@@ -611,7 +611,7 @@ const els = {
   statTime: document.getElementById("statTime"),
   statPending: document.getElementById("statPending"),
   statProcessed: document.getElementById("statProcessed"),
-  statProgress: document.getElementById("statProgress"),
+  statExecTime: document.getElementById("statExecTime"),
 };
 let lastScanSeconds = 0;
 
@@ -863,7 +863,7 @@ async function renderScanResults(){
   els.summary.textContent = "";
   els.statPending.textContent = String(scannedFiles.length);
   els.statProcessed.textContent = "0";
-  els.statProgress.textContent = "0%";
+  els.statExecTime.textContent = "–";
 }
 
 // ---------------------------------------------------------------------------
@@ -876,12 +876,19 @@ els.runBtn.addEventListener("click", async () => {
   els.runBtn.disabled = true;
   els.log.innerHTML = ""; els.log.style.display = "none"; els.logEmpty.style.display = "block";
   els.summary.textContent = "";
-  els.statPending.textContent = String(scannedFiles.length);
+  const total = scannedFiles.length;
+  els.statPending.textContent = String(total);
   els.statProcessed.textContent = "0";
-  els.statProgress.textContent = "0%";
+  els.statExecTime.textContent = "–";
 
   let success = 0;
   const errors = [];
+  const runStart = performance.now();
+
+  const updateExecStats = () => {
+    els.statProcessed.textContent = String(success);
+    els.statPending.textContent = String(total - success - errors.length);
+  };
 
   for (const f of scannedFiles){
     try{
@@ -894,6 +901,7 @@ els.runBtn.addEventListener("click", async () => {
       if (destExists){
         logLineHTML(`⚠ קיים כבר בספרייה, דולג: ${breakable(f.newName)}`, "warn");
         errors.push(f.originalName);
+        updateExecStats();
         continue;
       }
 
@@ -902,17 +910,20 @@ els.runBtn.addEventListener("click", async () => {
       await moveFile(sourceHandle, f.originalName, dirHandle, f.newName,
         (copied, total, start, instant) => pr.update(copied, total, start, instant));
       success += 1;
-      els.statProcessed.textContent = String(success);
-      els.statProgress.textContent = `${Math.round((success/scannedFiles.length)*100)}%`;
+      updateExecStats();
     } catch(e){
       logLineHTML(`✗ שגיאה ב-${breakable(f.originalName)}: ${escapeHtml(String(e.message || e))}`, "err");
       errors.push(f.originalName);
+      updateExecStats();
     }
   }
 
+  const elapsedSeconds = (performance.now() - runStart) / 1000;
+  els.statExecTime.textContent = `${elapsedSeconds.toFixed(1)}s`;
+
   logLine("", "");
-  logLine(`הושלם: ${success} קבצים עובדו בהצלחה, ${errors.length} שגיאות/דילוגים.`, success && !errors.length ? "ok" : "dim");
-  els.summary.textContent = `${success} הצליחו · ${errors.length} שגיאות/דילוגים`;
+  logLine(`Done: ${success} files processed successfully, ${errors.length} errors/skipped.`, success && !errors.length ? "ok" : "dim");
+  els.summary.textContent = `${success} succeeded · ${errors.length} errors/skipped`;
   els.runBtn.disabled = false;
 });
 </script>
