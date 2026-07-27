@@ -90,7 +90,7 @@
     transition:border-color .15s, background .15s, transform .1s, filter .15s;
     display:inline-flex; align-items:center; justify-content:center; gap:7px; text-align:center;
   }
-  button svg{ width:15px; height:15px; flex-shrink:0; }
+  button svg{ width:15px; height:15px; flex-shrink:0; stroke:currentColor; }
   button:hover:not(:disabled){ filter:brightness(1.08); }
   button:active:not(:disabled){ transform:translateY(1px); }
   button:disabled{ opacity:.4; cursor:not-allowed; }
@@ -196,13 +196,13 @@
         <div class="role"><span class="n">SRC</span> Source (new files)</div>
         <div class="name empty" id="sourceName">No folder selected</div>
         <div class="status-row"><span class="dot" id="sourceDot"></span><span class="status-text" id="sourceStatus">—</span></div>
-        <button class="small" id="sourceBtn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>Choose folder…</button>
+        <button class="small" id="sourceBtn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg><span id="sourceBtnLabel">Choose folder…</span></button>
       </div>
       <div class="folder-card">
         <div class="role"><span class="n">LIB</span> Library (H:\TV Shows)</div>
         <div class="name empty" id="libName">No folder selected</div>
         <div class="status-row"><span class="dot" id="libDot"></span><span class="status-text" id="libStatus">—</span></div>
-        <button class="small" id="libBtn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>Choose folder…</button>
+        <button class="small" id="libBtn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg><span id="libBtnLabel">Choose folder…</span></button>
       </div>
     </div>
     <div class="actions" style="margin-top:14px;">
@@ -213,7 +213,7 @@
   <div class="panel">
     <h2><span class="step">2</span> Scan</h2>
     <div class="actions">
-      <button class="primary" id="scanBtn" disabled><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>Scan source folder</button>
+      <button class="primary" id="scanBtn" disabled><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><span>Scan source folder</span></button>
       <label><input type="checkbox" id="tvdbCheck" checked> Look up episode names on TheTVDB</label>
     </div>
     <div class="banner warn" id="tvdbBanner">Can't connect to TheTVDB from the browser (likely a CORS block) — files will be organized without episode names.</div>
@@ -239,7 +239,7 @@
   <div class="panel" id="executePanel" style="display:none;">
     <h2><span class="step">3</span> Execute</h2>
     <div class="actions">
-      <button class="execute" id="runBtn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09Z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2Z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>Rename &amp; move</button>
+      <button class="execute" id="runBtn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09Z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2Z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg><span>Rename &amp; move</span></button>
       <span class="status-text" id="runHint">Files will be moved (not copied) — the source will not remain.</span>
     </div>
 
@@ -260,7 +260,7 @@
 
     <div class="log-head" style="margin-top:16px;">
       <h2 style="margin:0;">Activity Log</h2>
-      <button class="ghost small" id="clearLogBtn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6"/></svg>Clear log</button>
+      <button class="ghost small" id="clearLogBtn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6"/></svg><span>Clear log</span></button>
     </div>
     <div class="log-box">
       <div id="logEmpty">
@@ -576,10 +576,12 @@ const els = {
   sourceDot: document.getElementById("sourceDot"),
   sourceStatus: document.getElementById("sourceStatus"),
   sourceBtn: document.getElementById("sourceBtn"),
+  sourceBtnLabel: document.getElementById("sourceBtnLabel"),
   libName: document.getElementById("libName"),
   libDot: document.getElementById("libDot"),
   libStatus: document.getElementById("libStatus"),
   libBtn: document.getElementById("libBtn"),
+  libBtnLabel: document.getElementById("libBtnLabel"),
   resetBtn: document.getElementById("resetBtn"),
   scanBtn: document.getElementById("scanBtn"),
   tvdbCheck: document.getElementById("tvdbCheck"),
@@ -676,15 +678,15 @@ async function refreshFolderUI(){
     const perm = await sourceHandle.queryPermission({ mode: "readwrite" });
     if (perm === "granted"){
       els.sourceDot.className = "dot ok"; els.sourceStatus.textContent = "Connected";
-      els.sourceBtn.textContent = "Change folder…";
+      els.sourceBtnLabel.textContent = "Change folder…";
     } else {
       els.sourceDot.className = "dot warn"; els.sourceStatus.textContent = "Access permission required";
-      els.sourceBtn.textContent = "Grant access";
+      els.sourceBtnLabel.textContent = "Grant access";
     }
   } else {
     els.sourceName.textContent = "No folder selected"; els.sourceName.classList.add("empty");
     els.sourceDot.className = "dot"; els.sourceStatus.textContent = "—";
-    els.sourceBtn.textContent = "Choose folder…";
+    els.sourceBtnLabel.textContent = "Choose folder…";
   }
   if (libraryHandle){
     els.libName.textContent = libraryHandle.name;
@@ -692,15 +694,15 @@ async function refreshFolderUI(){
     const perm = await libraryHandle.queryPermission({ mode: "readwrite" });
     if (perm === "granted"){
       els.libDot.className = "dot ok"; els.libStatus.textContent = "Connected";
-      els.libBtn.textContent = "Change folder…";
+      els.libBtnLabel.textContent = "Change folder…";
     } else {
       els.libDot.className = "dot warn"; els.libStatus.textContent = "Access permission required";
-      els.libBtn.textContent = "Grant access";
+      els.libBtnLabel.textContent = "Grant access";
     }
   } else {
     els.libName.textContent = "No folder selected"; els.libName.classList.add("empty");
     els.libDot.className = "dot"; els.libStatus.textContent = "—";
-    els.libBtn.textContent = "Choose folder…";
+    els.libBtnLabel.textContent = "Choose folder…";
   }
   els.scanBtn.disabled = !(sourceHandle && libraryHandle
     && (await sourceHandle.queryPermission({mode:"readwrite"})) === "granted"
