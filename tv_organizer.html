@@ -609,6 +609,9 @@ let scannedFiles = [];
 function escapeHtml(s){
   return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 }
+function plural(n, singular, pluralForm){
+  return n === 1 ? singular : (pluralForm || `${singular}s`);
+}
 function breakable(s){
   // Insert a break opportunity after each dot/underscore/hyphen so long
   // filenames wrap between segments — never in the middle of one.
@@ -814,7 +817,7 @@ async function renderScanResults(){
     const count = scannedFiles.filter(f => f.seriesFolder === s).length;
     let exists = false;
     try{ await libraryHandle.getDirectoryHandle(s, {create:false}); exists = true; } catch(e){}
-    seriesRows.push(`<li><span class="sname">${escapeHtml(s)}</span><span class="scount">${count} files</span>
+    seriesRows.push(`<li><span class="sname">${escapeHtml(s)}</span><span class="scount">${count} ${plural(count, "file")}</span>
       <span class="stag ${exists ? "exists" : "newlib"}">${exists ? "Exists in library" : "New"}</span></li>`);
   }
 
@@ -858,7 +861,7 @@ async function renderScanResults(){
 // ---------------------------------------------------------------------------
 els.runBtn.addEventListener("click", async () => {
   if (!scannedFiles.length) return;
-  if (!confirm(`Move and rename ${scannedFiles.length} files? This will move the original files (not copy them).`)) return;
+  if (!confirm(`Move and rename ${scannedFiles.length} ${plural(scannedFiles.length, "file")}? This will move the original ${plural(scannedFiles.length, "file")} (not copy ${scannedFiles.length === 1 ? "it" : "them"}).`)) return;
 
   els.runBtn.disabled = true;
   els.log.innerHTML = ""; els.log.style.display = "none"; els.logEmpty.style.display = "block";
@@ -909,8 +912,8 @@ els.runBtn.addEventListener("click", async () => {
   els.statExecTime.textContent = `${elapsedSeconds.toFixed(1)}s`;
 
   logLine("", "");
-  logLine(`Done: ${success} files processed successfully, ${errors.length} errors/skipped.`, success && !errors.length ? "ok" : "dim");
-  els.summary.textContent = `${success} succeeded · ${errors.length} errors/skipped`;
+  logLine(`Done: ${success} ${plural(success, "file")} processed successfully, ${errors.length} ${plural(errors.length, "error/skip", "errors/skipped")}.`, success && !errors.length ? "ok" : "dim");
+  els.summary.textContent = `${success} succeeded · ${errors.length} ${plural(errors.length, "error/skip", "errors/skipped")}`;
   els.runBtn.disabled = false;
 });
 </script>
