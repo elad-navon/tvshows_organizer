@@ -237,24 +237,45 @@
   </div>
 
   <div class="panel" id="executePanel" style="display:none;">
-    <h2><span class="step">3</span> Execute</h2>
+    <h2><span class="step">3</span> Rename</h2>
     <div class="actions">
-      <button class="execute" id="runBtn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09Z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2Z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg><span>Rename &amp; move</span></button>
-      <span class="status-text" id="runHint">Files will be moved (not copied) — the source will not remain.</span>
+      <button class="primary" id="renameBtn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg><span>Rename files</span></button>
+      <span class="status-text">Renames files in place and creates any new series/season folders in the library. Fast — no file transfer.</span>
     </div>
 
     <div class="stat-row">
       <div class="stat-tile exec">
         <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></div>
-        <div><div class="stat-value" id="statPending">0</div><div class="stat-label">Pending</div></div>
+        <div><div class="stat-value" id="statRenamePending">0</div><div class="stat-label">Pending</div></div>
       </div>
       <div class="stat-tile exec">
         <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/></svg></div>
-        <div><div class="stat-value" id="statProcessed">0</div><div class="stat-label">Processed</div></div>
+        <div><div class="stat-value" id="statRenameProcessed">0</div><div class="stat-label">Processed</div></div>
       </div>
       <div class="stat-tile exec">
         <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l4 2"/></svg></div>
-        <div><div class="stat-value" id="statExecTime">–</div><div class="stat-label">Exec time</div></div>
+        <div><div class="stat-value" id="statRenameExecTime">–</div><div class="stat-label">Exec time</div></div>
+      </div>
+    </div>
+
+    <h2 style="margin-top:22px;"><span class="step">4</span> Move to library</h2>
+    <div class="actions">
+      <button class="execute" id="moveBtn" disabled><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09Z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2Z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg><span>Move to library</span></button>
+      <span class="status-text">Moves the renamed files into the library. This is the slow part for large files — the source will not remain.</span>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-tile exec">
+        <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></div>
+        <div><div class="stat-value" id="statMovePending">0</div><div class="stat-label">Pending</div></div>
+      </div>
+      <div class="stat-tile exec">
+        <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/></svg></div>
+        <div><div class="stat-value" id="statMoveProcessed">0</div><div class="stat-label">Processed</div></div>
+      </div>
+      <div class="stat-tile exec">
+        <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l4 2"/></svg></div>
+        <div><div class="stat-value" id="statMoveExecTime">–</div><div class="stat-label">Exec time</div></div>
       </div>
     </div>
 
@@ -265,7 +286,7 @@
     <div class="log-box">
       <div id="logEmpty">
         <div class="hint-title">No activity yet</div>
-        The log will appear here once you start scanning or executing
+        The log will appear here once you start scanning, renaming, or moving
       </div>
       <div id="log" style="display:none;"></div>
     </div>
@@ -567,6 +588,18 @@ async function moveFile(srcDirHandle, srcName, destDirHandle, destName, onProgre
   await copyFileWithProgress(file, destDirHandle, destName, onProgress);
   await srcDirHandle.removeEntry(srcName);
 }
+async function renameInPlace(dirHandle, oldName, newName){
+  // Same-directory rename — should always be the fast handle.move() path
+  // (no drive-to-drive transfer involved), with a copy+delete fallback for
+  // browsers that don't support move() at all.
+  const handle = await dirHandle.getFileHandle(oldName);
+  if (typeof handle.move === "function"){
+    try{ await handle.move(newName); return; } catch(e){ /* fall through */ }
+  }
+  const file = await handle.getFile();
+  await copyFileWithProgress(file, dirHandle, newName, () => {});
+  await dirHandle.removeEntry(oldName);
+}
 
 // ---------------------------------------------------------------------------
 // UI wiring
@@ -588,7 +621,8 @@ const els = {
   tvdbBanner: document.getElementById("tvdbBanner"),
   scanResults: document.getElementById("scanResults"),
   executePanel: document.getElementById("executePanel"),
-  runBtn: document.getElementById("runBtn"),
+  renameBtn: document.getElementById("renameBtn"),
+  moveBtn: document.getElementById("moveBtn"),
   log: document.getElementById("log"),
   logEmpty: document.getElementById("logEmpty"),
   clearLogBtn: document.getElementById("clearLogBtn"),
@@ -596,9 +630,12 @@ const els = {
   statSeries: document.getElementById("statSeries"),
   statFiles: document.getElementById("statFiles"),
   statTime: document.getElementById("statTime"),
-  statPending: document.getElementById("statPending"),
-  statProcessed: document.getElementById("statProcessed"),
-  statExecTime: document.getElementById("statExecTime"),
+  statRenamePending: document.getElementById("statRenamePending"),
+  statRenameProcessed: document.getElementById("statRenameProcessed"),
+  statRenameExecTime: document.getElementById("statRenameExecTime"),
+  statMovePending: document.getElementById("statMovePending"),
+  statMoveProcessed: document.getElementById("statMoveProcessed"),
+  statMoveExecTime: document.getElementById("statMoveExecTime"),
 };
 let lastScanSeconds = 0;
 
@@ -611,6 +648,13 @@ function escapeHtml(s){
 }
 function plural(n, singular, pluralForm){
   return n === 1 ? singular : (pluralForm || `${singular}s`);
+}
+function formatDuration(totalSeconds){
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
+  const wholeSeconds = Math.round(totalSeconds);
+  const minutes = Math.floor(wholeSeconds / 60);
+  const seconds = wholeSeconds % 60;
+  return `${minutes}m ${seconds}s`;
 }
 function breakable(s){
   // Insert a break opportunity after each dot/underscore/hyphen so long
@@ -776,7 +820,9 @@ els.scanBtn.addEventListener("click", async () => {
       handle, originalName: name,
       seriesFile: parsed.seriesFile, seriesFolder: parsed.seriesFolder,
       episodeTag: parsed.episodeTag, episodeName, ext: parsed.ext,
-      newName: buildNewFilename(parsed.seriesFile, parsed.episodeTag, parsed.ext, episodeName)
+      newName: buildNewFilename(parsed.seriesFile, parsed.episodeTag, parsed.ext, episodeName),
+      currentName: name, renamed: false, moved: false,
+      destDirHandle: null, destSituation: null
     });
   }
 
@@ -802,7 +848,7 @@ els.scanBtn.addEventListener("click", async () => {
 });
 
 async function renderScanResults(){
-  els.statTime.textContent = `${lastScanSeconds.toFixed(1)}s`;
+  els.statTime.textContent = formatDuration(lastScanSeconds);
   els.statFiles.textContent = String(scannedFiles.length);
   els.statSeries.textContent = String(new Set(scannedFiles.map(f => f.seriesFolder)).size);
 
@@ -851,70 +897,128 @@ async function renderScanResults(){
   els.log.innerHTML = "";
   els.logEmpty.style.display = "block";
   els.summary.textContent = "";
-  els.statPending.textContent = String(scannedFiles.length);
-  els.statProcessed.textContent = "0";
-  els.statExecTime.textContent = "–";
+  els.statRenamePending.textContent = String(scannedFiles.length);
+  els.statRenameProcessed.textContent = "0";
+  els.statRenameExecTime.textContent = "–";
+  els.statMovePending.textContent = "0";
+  els.statMoveProcessed.textContent = "0";
+  els.statMoveExecTime.textContent = "–";
+  els.renameBtn.disabled = false;
+  els.moveBtn.disabled = true;
 }
 
 // ---------------------------------------------------------------------------
-// Execute
+// Execute — step 3: rename in place + create library folders (fast)
 // ---------------------------------------------------------------------------
-els.runBtn.addEventListener("click", async () => {
-  if (!scannedFiles.length) return;
-  if (!confirm(`Move and rename ${scannedFiles.length} ${plural(scannedFiles.length, "file")}? This will move the original ${plural(scannedFiles.length, "file")} (not copy ${scannedFiles.length === 1 ? "it" : "them"}).`)) return;
+function updateMoveAvailability(){
+  els.moveBtn.disabled = !scannedFiles.some(f => f.renamed && !f.moved);
+}
 
-  els.runBtn.disabled = true;
-  els.log.innerHTML = ""; els.log.style.display = "none"; els.logEmpty.style.display = "block";
-  els.summary.textContent = "";
-  const total = scannedFiles.length;
-  els.statPending.textContent = String(total);
-  els.statProcessed.textContent = "0";
-  els.statExecTime.textContent = "–";
+els.renameBtn.addEventListener("click", async () => {
+  const pending = scannedFiles.filter(f => !f.renamed);
+  if (!pending.length) return;
+  if (!confirm(`Rename ${pending.length} ${plural(pending.length, "file")} and create any missing library folders?\nFiles stay in the source folder — nothing is moved yet.`)) return;
 
+  els.renameBtn.disabled = true;
+  const total = pending.length;
   let success = 0;
   const errors = [];
-  const runStart = performance.now();
+  const t0 = performance.now();
 
-  const updateExecStats = () => {
-    els.statProcessed.textContent = String(success);
-    els.statPending.textContent = String(total - success - errors.length);
+  const updateStats = () => {
+    els.statRenameProcessed.textContent = String(success);
+    els.statRenamePending.textContent = String(total - success - errors.length);
   };
+  updateStats();
 
-  for (const f of scannedFiles){
+  for (const f of pending){
     try{
-      // Resolve straight to the final library destination — no local staging
-      // folder, so every file's bytes are read and written exactly once.
+      // Resolving the library destination here creates any new series/season
+      // folder that's needed — that part is cheap (just directory entries),
+      // unlike the actual file transfer, which happens in the Move step.
       const { dirHandle, situation } = await resolveLibraryDest(libraryHandle, f.seriesFolder, f.episodeTag);
+      f.destDirHandle = dirHandle;
+      f.destSituation = situation;
 
+      if (f.currentName !== f.newName){
+        await renameInPlace(sourceHandle, f.currentName, f.newName);
+        f.currentName = f.newName;
+      }
+      f.renamed = true;
+      logLineHTML(`✎ ${breakable(f.originalName)} → ${breakable(f.newName)}  [${situation}]`, "cyan");
+      success += 1;
+    } catch(e){
+      logLineHTML(`✗ Error renaming ${breakable(f.originalName)}: ${escapeHtml(String(e.message || e))}`, "err");
+      errors.push(f.originalName);
+    }
+    updateStats();
+  }
+
+  const elapsedSeconds = (performance.now() - t0) / 1000;
+  els.statRenameExecTime.textContent = formatDuration(elapsedSeconds);
+
+  logLine("", "");
+  logLine(`Rename done: ${success} ${plural(success, "file")} renamed, ${errors.length} ${plural(errors.length, "error", "errors")}.`, success && !errors.length ? "ok" : "dim");
+  els.summary.textContent = `${success} renamed · ${errors.length} ${plural(errors.length, "error", "errors")}`;
+  els.renameBtn.disabled = false;
+  updateMoveAvailability();
+});
+
+// ---------------------------------------------------------------------------
+// Execute — step 4: move renamed files into the library (slow — this is the
+// part that actually copies bytes when source and library are on different
+// drives, since handle.move() can only take the instant path on the same
+// volume). Only runs on files that were already renamed.
+// ---------------------------------------------------------------------------
+els.moveBtn.addEventListener("click", async () => {
+  const ready = scannedFiles.filter(f => f.renamed && !f.moved);
+  if (!ready.length) return;
+  if (!confirm(`Move ${ready.length} renamed ${plural(ready.length, "file")} into the library? This will move the original ${plural(ready.length, "file")} (not copy ${ready.length === 1 ? "it" : "them"}).`)) return;
+
+  els.moveBtn.disabled = true;
+  const total = ready.length;
+  let success = 0;
+  const errors = [];
+  const t0 = performance.now();
+
+  const updateStats = () => {
+    els.statMoveProcessed.textContent = String(success);
+    els.statMovePending.textContent = String(total - success - errors.length);
+  };
+  updateStats();
+
+  for (const f of ready){
+    try{
       let destExists = false;
-      try{ await dirHandle.getFileHandle(f.newName, {create:false}); destExists = true; } catch(e){}
+      try{ await f.destDirHandle.getFileHandle(f.newName, {create:false}); destExists = true; } catch(e){}
       if (destExists){
         logLineHTML(`⚠ Already exists in library, skipped: ${breakable(f.newName)}`, "warn");
         errors.push(f.originalName);
-        updateExecStats();
+        f.moved = true;
+        updateStats();
         continue;
       }
 
-      logLineHTML(`${VIDEO_EXT.has(f.ext) ? "🎬" : "📄"} ${breakable(f.originalName)}  [${situation}]`, "cyan");
+      logLineHTML(`${VIDEO_EXT.has(f.ext) ? "🎬" : "📄"} ${breakable(f.newName)}  [${f.destSituation}]`, "cyan");
       const pr = progressRow();
-      await moveFile(sourceHandle, f.originalName, dirHandle, f.newName,
+      await moveFile(sourceHandle, f.currentName, f.destDirHandle, f.newName,
         (copied, total, start, instant) => pr.update(copied, total, start, instant));
+      f.moved = true;
       success += 1;
-      updateExecStats();
     } catch(e){
-      logLineHTML(`✗ Error processing ${breakable(f.originalName)}: ${escapeHtml(String(e.message || e))}`, "err");
+      logLineHTML(`✗ Error moving ${breakable(f.newName)}: ${escapeHtml(String(e.message || e))}`, "err");
       errors.push(f.originalName);
-      updateExecStats();
     }
+    updateStats();
   }
 
-  const elapsedSeconds = (performance.now() - runStart) / 1000;
-  els.statExecTime.textContent = `${elapsedSeconds.toFixed(1)}s`;
+  const elapsedSeconds = (performance.now() - t0) / 1000;
+  els.statMoveExecTime.textContent = formatDuration(elapsedSeconds);
 
   logLine("", "");
-  logLine(`Done: ${success} ${plural(success, "file")} processed successfully, ${errors.length} ${plural(errors.length, "error/skip", "errors/skipped")}.`, success && !errors.length ? "ok" : "dim");
-  els.summary.textContent = `${success} succeeded · ${errors.length} ${plural(errors.length, "error/skip", "errors/skipped")}`;
-  els.runBtn.disabled = false;
+  logLine(`Move done: ${success} ${plural(success, "file")} moved, ${errors.length} ${plural(errors.length, "error", "errors")}.`, success && !errors.length ? "ok" : "dim");
+  els.summary.textContent = `${success} moved · ${errors.length} ${plural(errors.length, "error", "errors")}`;
+  updateMoveAvailability();
 });
 </script>
 </body>
