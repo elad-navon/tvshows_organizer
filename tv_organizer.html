@@ -144,10 +144,10 @@
   table{ width:100%; table-layout:fixed; border-collapse:collapse; font-family:var(--mono); font-size:12.5px; direction:ltr; text-align:left; margin-top:16px; }
   th,td{ padding:8px; border-bottom:1px solid var(--line); vertical-align:top; overflow-wrap:break-word; word-break:normal; }
   th{ color:var(--text-dim); font-family:var(--sans); font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; text-align:left; }
-  td.poster-cell{ width:150px; padding:8px 54px 8px 0; }
-  th:nth-child(2), td:nth-child(2){ width:38%; }
+  td.poster-cell{padding:8px 18px 8px 0}
+  th:nth-child(2), td:nth-child(2){ width:30%; }
   th:last-child, td:last-child{ width:38%; }
-  td.arrow{ color:var(--blue); padding:8px 4px; width:5%; text-align:center; word-break:normal; }
+  td.arrow{ color:var(--blue); padding:8px 4px; text-align:center; word-break:normal; }
   td.new{ color:var(--green); }
   .row-thumb{
     width:94px; height:139px; border-radius:6px; object-fit:cover; display:block;
@@ -157,9 +157,19 @@
   .series-list{ list-style:none; margin:14px 0 0; padding:0; font-size:13px; }
   .series-list li{ display:flex; align-items:center; justify-content:flex-start; gap:10px; padding:8px 0; border-bottom:1px dashed var(--line); }
   .series-list li:last-child{ border-bottom:none; }
+  .series-list .sinfo{ display:flex; align-items:center; gap:10px; }
   .series-list .sname{ font-family:var(--mono); direction:ltr; unicode-bidi:isolate; }
   .series-list .scount{ color:var(--text-dim); }
   .series-list .stag{ font-size:10.5px; padding:2px 8px; border-radius:4px; white-space:nowrap; letter-spacing:.03em; }
+  .select-toolbar{ display:flex; align-items:center; gap:14px; margin-top:16px; font-size:13px; color:var(--text-dim); }
+  .select-toolbar button{ padding:5px 11px; font-size:12px; }
+  .select-toolbar .select-count{ margin-left:auto; }
+  td.select-cell{ width:34px; padding:8px 0 8px 8px; }
+  th.select-cell{ width:34px; padding:8px 0 8px 8px; }
+  input.row-check, input#selectAllCheck{
+    width:16px; height:16px; accent-color:var(--blue); cursor:pointer; vertical-align:middle;
+  }
+  tr.row-unselected{ opacity:.4; }
   .stag.newlib{ background:#0f2b1c; color:var(--green); }
   .stag.exists{ background:var(--field); color:var(--text-dim); border:1px solid var(--line); }
 
@@ -201,7 +211,7 @@
 <div class="wrap">
 
   <header>
-    <span class="version-tag">v12</span>
+    <span class="version-tag">v15</span>
     <h1><span class="hl">TV</span> Organizer</h1>
     <div class="tagline">
       <span class="tagline-line"></span>
@@ -816,7 +826,8 @@ els.scanBtn.addEventListener("click", async () => {
       handle, originalName: name,
       seriesFile: parsed.seriesFile, seriesFolder: parsed.seriesFolder,
       episodeTag: parsed.episodeTag, episodeName, ext: parsed.ext,
-      newName: buildNewFilename(parsed.seriesFile, parsed.episodeTag, parsed.ext, episodeName)
+      newName: buildNewFilename(parsed.seriesFile, parsed.episodeTag, parsed.ext, episodeName),
+      selected: true
     });
   }
 
@@ -860,7 +871,7 @@ async function renderScanResults(){
     const count = scannedFiles.filter(f => f.seriesFolder === s).length;
     let exists = false;
     try{ await libraryHandle.getDirectoryHandle(s, {create:false}); exists = true; } catch(e){}
-    seriesRows.push(`<li><span class="sname">${escapeHtml(s)}</span><span class="scount">${count} ${plural(count, "file")}</span>
+    seriesRows.push(`<li><span class="sinfo"><span class="sname">${escapeHtml(s)}</span><span class="scount">${count} ${plural(count, "file")}</span></span>
       <span class="stag ${exists ? "exists" : "newlib"}">${exists ? "Exists in library" : "New"}</span></li>`);
   }
 
@@ -870,6 +881,7 @@ async function renderScanResults(){
     if (!episodeGroups.has(key)) episodeGroups.set(key, []);
     episodeGroups.get(key).push(f);
   }
+  const indexOf = new Map(scannedFiles.map((f,i) => [f,i]));
   const tableRows = [...episodeGroups.values()].map(group => {
     const posterUrl = seriesPosterMap.get(group[0].seriesFolder);
     const thumb = posterUrl
@@ -879,14 +891,28 @@ async function renderScanResults(){
       const posterTd = idx === 0
         ? `<td class="poster-cell" rowspan="${group.length}">${thumb}</td>`
         : "";
-      return `<tr>${posterTd}<td>${breakable(f.originalName)}</td><td class="arrow">→</td><td class="new">${breakable(f.newName)}</td></tr>`;
+      const i = indexOf.get(f);
+      return `<tr class="${f.selected ? "" : "row-unselected"}" data-idx="${i}"><td class="select-cell"><input type="checkbox" class="row-check" data-idx="${i}" ${f.selected ? "checked" : ""}></td>${posterTd}<td>${breakable(f.originalName)}</td><td class="arrow">→</td><td class="new">${breakable(f.newName)}</td></tr>`;
     }).join("");
   }).join("");
 
   els.scanResults.innerHTML = `
     <ul class="series-list">${seriesRows.join("")}</ul>
+    <div class="select-toolbar">
+      <input type="checkbox" id="selectAllCheck">
+      <button class="ghost small" id="selectAllBtn">Select all</button>
+      <button class="ghost small" id="selectNoneBtn">Select none</button>
+      <span class="select-count" id="selectCount"></span>
+    </div>
     <table>
-      <thead><tr><th></th><th>Original file</th><th></th><th>New name</th></tr></thead>
+      <colgroup>
+        <col style="width:34px">
+        <col style="width:110px">
+        <col style="width:50%">
+        <col style="width:40px">
+        <col style="width:50%">
+      </colgroup>
+      <thead><tr><th class="select-cell"></th><th></th><th>Original file</th><th></th><th>New name</th></tr></thead>
       <tbody>${tableRows}</tbody>
     </table>`;
   els.runBtn.disabled = false;
@@ -894,22 +920,64 @@ async function renderScanResults(){
   els.log.innerHTML = "";
   els.logEmpty.style.display = "block";
   els.summary.textContent = "";
-  els.statPending.textContent = String(scannedFiles.length);
+  updateSelectionUI();
+}
+
+function selectedFiles(){
+  return scannedFiles.filter(f => f.selected);
+}
+function updateSelectionUI(){
+  const total = scannedFiles.length;
+  const selected = selectedFiles().length;
+  const selectAllCheck = document.getElementById("selectAllCheck");
+  const selectCount = document.getElementById("selectCount");
+  if (selectAllCheck){
+    selectAllCheck.checked = selected === total && total > 0;
+    selectAllCheck.indeterminate = selected > 0 && selected < total;
+  }
+  if (selectCount) selectCount.textContent = `${selected} of ${total} ${plural(total, "file")} selected`;
+  els.runBtn.disabled = selected === 0;
+  els.statPending.textContent = String(selected);
   els.statProcessed.textContent = "0";
   els.statExecTime.textContent = "–";
 }
+
+els.scanResults.addEventListener("change", (e) => {
+  if (e.target.classList.contains("row-check")){
+    const i = parseInt(e.target.dataset.idx, 10);
+    scannedFiles[i].selected = e.target.checked;
+    e.target.closest("tr").classList.toggle("row-unselected", !e.target.checked);
+    updateSelectionUI();
+  } else if (e.target.id === "selectAllCheck"){
+    const check = e.target.checked;
+    for (const f of scannedFiles) f.selected = check;
+    els.scanResults.querySelectorAll(".row-check").forEach(cb => cb.checked = check);
+    els.scanResults.querySelectorAll("tbody tr").forEach(tr => tr.classList.toggle("row-unselected", !check));
+    updateSelectionUI();
+  }
+});
+els.scanResults.addEventListener("click", (e) => {
+  if (e.target.id === "selectAllBtn" || e.target.id === "selectNoneBtn"){
+    const check = e.target.id === "selectAllBtn";
+    for (const f of scannedFiles) f.selected = check;
+    els.scanResults.querySelectorAll(".row-check").forEach(cb => cb.checked = check);
+    els.scanResults.querySelectorAll("tbody tr").forEach(tr => tr.classList.toggle("row-unselected", !check));
+    updateSelectionUI();
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Execute
 // ---------------------------------------------------------------------------
 els.runBtn.addEventListener("click", async () => {
-  if (!scannedFiles.length) return;
-  if (!confirm(`Move and rename ${scannedFiles.length} ${plural(scannedFiles.length, "file")}? This will move the original ${plural(scannedFiles.length, "file")} (not copy ${scannedFiles.length === 1 ? "it" : "them"}).`)) return;
+  const toProcess = selectedFiles();
+  if (!toProcess.length) return;
+  if (!confirm(`Move and rename ${toProcess.length} ${plural(toProcess.length, "file")}? This will move the original ${plural(toProcess.length, "file")} (not copy ${toProcess.length === 1 ? "it" : "them"}).`)) return;
 
   els.runBtn.disabled = true;
   els.log.innerHTML = ""; els.log.style.display = "none"; els.logEmpty.style.display = "block";
   els.summary.textContent = "";
-  const total = scannedFiles.length;
+  const total = toProcess.length;
   els.statPending.textContent = String(total);
   els.statProcessed.textContent = "0";
   els.statExecTime.textContent = "–";
@@ -923,7 +991,7 @@ els.runBtn.addEventListener("click", async () => {
     els.statPending.textContent = String(total - success - errors.length);
   };
 
-  for (const f of scannedFiles){
+  for (const f of toProcess){
     try{
       // Resolve straight to the final library destination — no local staging
       // folder, so every file's bytes are read and written exactly once.
