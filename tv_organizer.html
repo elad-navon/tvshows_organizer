@@ -201,7 +201,7 @@
 <div class="wrap">
 
   <header>
-    <span class="version-tag">v10</span>
+    <span class="version-tag">v12</span>
     <h1><span class="hl">TV</span> Organizer</h1>
     <div class="tagline">
       <span class="tagline-line"></span>
@@ -459,15 +459,22 @@ async function searchShowId(query){
 }
 async function getShowId(seriesFolder){
   if (tvdbShowCache.has(seriesFolder)) return tvdbShowCache.get(seriesFolder);
-  const queries = [seriesFolder];
-  const stripped = seriesFolder.replace(/^(The|A|An)\s+/i, "").trim();
-  if (stripped && stripped !== seriesFolder) queries.push(stripped);
+  // Try the "cleanest" queries first — a trailing year or country code is
+  // usually part of the release name, not the show's actual title, and
+  // searching with it still attached can return a confident-looking but
+  // wrong fuzzy match (e.g. a different, unrelated show), which would stop
+  // us from ever trying the accurate query. The raw name is kept as a
+  // fallback in case the stripped year genuinely was part of the title.
+  const queries = [];
   const noSuffix = seriesFolder.replace(/\s+(Us|Uk|Au|Ca|Nz|Ie|Za|De|Fr|Es|It|Jp|Kr|\d{4})$/i, "").trim();
   if (noSuffix && noSuffix !== seriesFolder){
     queries.push(noSuffix);
     const noSuffixNoArt = noSuffix.replace(/^(The|A|An)\s+/i, "").trim();
     if (noSuffixNoArt && noSuffixNoArt !== noSuffix) queries.push(noSuffixNoArt);
   }
+  queries.push(seriesFolder);
+  const stripped = seriesFolder.replace(/^(The|A|An)\s+/i, "").trim();
+  if (stripped && stripped !== seriesFolder) queries.push(stripped);
   const words = seriesFolder.split(" ");
   if (words.length > 2) queries.push(words.slice(0,2).join(" "));
   const seen = new Set();
