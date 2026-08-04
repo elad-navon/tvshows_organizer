@@ -455,11 +455,22 @@ async function tvdbGet(url, retries=2){
   }
   return null;
 }
-async function searchShowId(query){
+async function searchShowId(query, expectedYear){
   const data = await tvdbGet(`https://api4.thetvdb.com/v4/search?query=${encodeURIComponent(query)}&type=series`);
   const results = data?.data;
   if (!Array.isArray(results) || !results.length) return null;
-  const best = results.reduce((a,b) => (b.score||0) > (a.score||0) ? b : a);
+  // When the release name carried a year, prefer a candidate whose TVDB
+  // year matches it over whichever candidate merely scored highest —
+  // two unrelated shows can share the exact same title (e.g. "Betrayal"
+  // 2013 vs 2023), and a bare fuzzy-score pick will silently grab the
+  // wrong one. Only fall back to pure score when no candidate's year
+  // matches (or the show has no year on record).
+  let pool = results;
+  if (expectedYear){
+    const yearMatches = results.filter(r => String(r.year || "") === String(expectedYear));
+    if (yearMatches.length) pool = yearMatches;
+  }
+  const best = pool.reduce((a,b) => (b.score||0) > (a.score||0) ? b : a);
   if (!best?.tvdb_id) return null;
   return {
     id: parseInt(best.tvdb_id,10),
@@ -475,6 +486,8 @@ async function getShowId(seriesFolder){
   // wrong fuzzy match (e.g. a different, unrelated show), which would stop
   // us from ever trying the accurate query. The raw name is kept as a
   // fallback in case the stripped year genuinely was part of the title.
+  const yearMatch = seriesFolder.match(/\s+(\d{4})$/);
+  const expectedYear = yearMatch ? yearMatch[1] : null;
   const queries = [];
   const noSuffix = seriesFolder.replace(/\s+(Us|Uk|Au|Ca|Nz|Ie|Za|De|Fr|Es|It|Jp|Kr|\d{4})$/i, "").trim();
   if (noSuffix && noSuffix !== seriesFolder){
@@ -492,7 +505,7 @@ async function getShowId(seriesFolder){
 
   let result = null;
   for (const q of uniq){
-    result = await searchShowId(q);
+    result = await searchShowId(q, expectedYear);
     if (result || tvdbBlocked) break;
   }
   tvdbShowCache.set(seriesFolder, result);
