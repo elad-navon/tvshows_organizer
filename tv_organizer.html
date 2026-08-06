@@ -103,16 +103,20 @@
     font-family:var(--sans); font-size:13px; font-weight:700;
     border-radius:7px; border:1px solid var(--line);
     background:var(--field); color:var(--text); padding:9px 16px; cursor:pointer;
-    transition:border-color .15s, background .15s, transform .1s, filter .15s;
+    transition:border-color .15s, background .15s, transform .08s, filter .15s, box-shadow .08s;
     display:inline-flex; align-items:center; justify-content:center; gap:7px; text-align:center;
+    box-shadow:0 3px 0 #050810, 0 5px 10px #00000059;
   }
   button svg{ width:15px; height:15px; flex-shrink:0; stroke:currentColor; }
   button:hover:not(:disabled){ filter:brightness(1.08); }
-  button:active:not(:disabled){ transform:translateY(1px); }
-  button:disabled{ opacity:.4; cursor:not-allowed; }
-  button.primary{ background:var(--blue); color:#fff; border-color:var(--blue); }
-  button.execute{ background:var(--orange); color:#241505; border-color:var(--orange); }
-  button.ghost{ background:transparent; }
+  button:active:not(:disabled){ transform:translateY(3px); box-shadow:0 0 0 #050810, 0 1px 3px #00000040; }
+  button:disabled{ opacity:.4; cursor:not-allowed; box-shadow:none; transform:none; }
+  button.primary{ background:var(--blue); color:#fff; border-color:var(--blue-dim); box-shadow:0 3px 0 var(--blue-dim), 0 5px 12px #3b82f659; }
+  button.primary:active:not(:disabled){ box-shadow:0 0 0 var(--blue-dim), 0 1px 4px #3b82f640; }
+  button.execute{ background:var(--orange); color:#241505; border-color:#b85f22; box-shadow:0 3px 0 #b85f22, 0 5px 12px #f0883e59; }
+  button.execute:active:not(:disabled){ box-shadow:0 0 0 #b85f22, 0 1px 4px #f0883e40; }
+  button.ghost{ background:#16213a; border-color:var(--line); box-shadow:0 3px 0 #05080f, 0 4px 8px #00000050; }
+  button.ghost:active:not(:disabled){ box-shadow:0 0 0 #05080f, 0 1px 3px #00000040; }
   button.small{ padding:7px 13px; font-size:12px; }
   button.full{ width:100%; justify-content:center; padding:12px 16px; font-size:13.5px; }
 
@@ -321,6 +325,16 @@ const EPISODE_PATTERN = /^(.*?)[.\s_-]+((?:S\d{1,2}E\d{1,2}|\d{1,2}x\d{2}))/i;
 const TVDB_API_KEY = "ec2b6fb8-6a17-41eb-b245-c34a922f910e";
 const HEBREW_RE = /[\u0590-\u05FF]/;
 
+// Manual TVDB id overrides for series that can't be found reliably through
+// the /search endpoint — most often because TVDB has no English name or
+// alias recorded for them yet (e.g. Israeli shows only listed under their
+// Hebrew name), so no amount of query-massaging or name-matching will find
+// them by text. Key is the exact seriesFolder text (as cleanSeriesName
+// produces it); value is the TVDB series id from its thetvdb.com URL.
+const MANUAL_SHOW_OVERRIDES = {
+  "On Standby": 480043,   // TVDB name is "בודקת" — no English name/alias on file
+};
+
 // ---------------------------------------------------------------------------
 // IndexedDB — persist the two directory handles between sessions
 // ---------------------------------------------------------------------------
@@ -455,6 +469,30 @@ async function tvdbGet(url, retries=2){
   }
   return null;
 }
+function looksLikeMatch(query, candidateName){
+  // Sanity-check TVDB's own top pick against the text we actually searched
+  // for. TVDB's fuzzy search can return a "least bad" result even when
+  // nothing good matches — e.g. a query of "On Standby" (a show with no
+  // English name/alias on TVDB) can score "On a Stand", a completely
+  // unrelated show, as its best guess purely from letter overlap.
+  // Requiring every real word of the query to also appear as a whole word
+  // in the candidate's name catches that, while still allowing the
+  // candidate to have extra words the query didn't ("The", a subtitle,
+  // etc.) — normal, and shouldn't be rejected. Numeric tokens (years) are
+  // ignored; those are handled separately via expectedYear.
+  const words = s => new Set((s.toLowerCase().match(/[a-z0-9]+/g) || []).filter(w => !/^\d+$/.test(w)));
+  const queryWords = words(query);
+  if (!queryWords.size) return true;
+  const nameWords = words(candidateName);
+  for (const w of queryWords) if (!nameWords.has(w)) return false;
+  return true;
+}
+async function fetchSeriesById(id){
+  const data = await tvdbGet(`https://api4.thetvdb.com/v4/series/${id}`);
+  const series = data?.data;
+  if (!series) return null;
+  return { id, name: series.name || "", posterUrl: series.image || null };
+}
 async function searchShowId(query, expectedYear){
   const data = await tvdbGet(`https://api4.thetvdb.com/v4/search?query=${encodeURIComponent(query)}&type=series`);
   const results = data?.data;
@@ -472,6 +510,7 @@ async function searchShowId(query, expectedYear){
   }
   const best = pool.reduce((a,b) => (b.score||0) > (a.score||0) ? b : a);
   if (!best?.tvdb_id) return null;
+  if (!looksLikeMatch(query, best.name || "")) return null;
   return {
     id: parseInt(best.tvdb_id,10),
     name: best.name || "",
@@ -480,6 +519,12 @@ async function searchShowId(query, expectedYear){
 }
 async function getShowId(seriesFolder){
   if (tvdbShowCache.has(seriesFolder)) return tvdbShowCache.get(seriesFolder);
+  if (MANUAL_SHOW_OVERRIDES[seriesFolder] != null){
+    const result = await fetchSeriesById(MANUAL_SHOW_OVERRIDES[seriesFolder])
+      || { id: MANUAL_SHOW_OVERRIDES[seriesFolder], name: `${seriesFolder} (manual override)`, posterUrl: null };
+    tvdbShowCache.set(seriesFolder, result);
+    return result;
+  }
   // Try the "cleanest" queries first — a trailing year or country code is
   // usually part of the release name, not the show's actual title, and
   // searching with it still attached can return a confident-looking but
