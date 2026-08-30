@@ -119,6 +119,14 @@
   .actions{ display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:4px; }
   .actions label{ font-size:14px; color:var(--text-dim); display:flex; align-items:center; gap:7px; cursor:pointer; }
   .actions input[type=checkbox]{ accent-color:var(--blue); width:15px; height:15px; }
+  .key-input{
+    font-family:var(--mono); font-size:13px; color:var(--text);
+    background:var(--field); border:1px solid var(--line); border-radius:7px;
+    padding:7px 11px; width:230px; margin-left:2px;
+  }
+  .key-input::placeholder{ color:var(--text-dim); font-family:var(--sans); }
+  .key-input:focus{ outline:none; border-color:var(--blue); }
+  .status-text a{ color:var(--blue); }
 
   .banner{ font-size:13.5px; padding:10px 14px; border-radius:7px; margin-top:12px; border:1px solid; display:none; }
   .banner.show{ display:block; }
@@ -251,7 +259,9 @@
     <div class="actions">
       <button class="primary" id="scanBtn" disabled><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><span>Scan source folder</span></button>
       <label><input type="checkbox" id="tmdbCheck" checked> Look up episode names on TMDB</label>
+      <label>TMDB API key: <input type="text" class="key-input" id="tmdbKeyInput" placeholder="paste your TMDB v3 API key" autocomplete="off" spellcheck="false"></label>
     </div>
+    <div class="status-text" style="display:block; margin-top:8px;">Get a free key at <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">themoviedb.org/settings/api</a> — it's saved only in this browser, never uploaded anywhere.</div>
     <div class="banner warn" id="tmdbBanner">Can't connect to TMDB (missing API key or a CORS block) — files will be organized without episode names.</div>
 
     <div class="stat-row cols4">
@@ -316,7 +326,6 @@
 
 </div>
 
-<script src="tmdb.config.js"></script>
 <script>
 "use strict";
 
@@ -326,9 +335,10 @@
 const VIDEO_EXT = new Set([".mkv",".mp4",".avi",".mov",".wmv",".m4v"]);
 const SUBTITLE_EXT = new Set([".srt"]);
 const EPISODE_PATTERN = /^(.*?)[.\s_-]+((?:S\d{1,2}E\d{1,2}|\d{1,2}x\d{2}))/i;
-// Loaded from tmdb.config.js (git-ignored, kept out of this public repo) —
-// see tmdb.config.example.js for the expected format.
-const TMDB_API_KEY = (typeof window !== "undefined" && window.TMDB_API_KEY) || "";
+// Entered by the user in the "TMDB API key" field and kept only in this
+// browser's localStorage — never committed to this public repo, and never
+// sent anywhere except directly to api.themoviedb.org.
+let TMDB_API_KEY = localStorage.getItem("tmdbApiKey") || "";
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500";
 const HEBREW_RE = /[\u0590-\u05FF]/;
 
@@ -654,6 +664,7 @@ const els = {
   resetBtn: document.getElementById("resetBtn"),
   scanBtn: document.getElementById("scanBtn"),
   tmdbCheck: document.getElementById("tmdbCheck"),
+  tmdbKeyInput: document.getElementById("tmdbKeyInput"),
   tmdbBanner: document.getElementById("tmdbBanner"),
   scanResults: document.getElementById("scanResults"),
   executePanel: document.getElementById("executePanel"),
@@ -820,6 +831,12 @@ els.resetBtn.addEventListener("click", async () => {
   els.statProcessed.textContent = "0";
   els.statExecTime.textContent = "–";
   await refreshFolderUI();
+});
+
+els.tmdbKeyInput.value = TMDB_API_KEY;
+els.tmdbKeyInput.addEventListener("input", () => {
+  TMDB_API_KEY = els.tmdbKeyInput.value.trim();
+  localStorage.setItem("tmdbApiKey", TMDB_API_KEY);
 });
 
 (async function init(){
