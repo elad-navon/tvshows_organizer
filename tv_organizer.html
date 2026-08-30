@@ -250,9 +250,9 @@
     <h2><span class="step">2</span> Scan <span class="rule"></span></h2>
     <div class="actions">
       <button class="primary" id="scanBtn" disabled><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><span>Scan source folder</span></button>
-      <label><input type="checkbox" id="tvdbCheck" checked> Look up episode names on TheTVDB</label>
+      <label><input type="checkbox" id="tmdbCheck" checked> Look up episode names on TMDB</label>
     </div>
-    <div class="banner warn" id="tvdbBanner">Can't connect to TheTVDB from the browser (likely a CORS block) — files will be organized without episode names.</div>
+    <div class="banner warn" id="tmdbBanner">Can't connect to TMDB (missing API key or a CORS block) — files will be organized without episode names.</div>
 
     <div class="stat-row cols4">
       <div class="stat-tile">
@@ -316,6 +316,7 @@
 
 </div>
 
+<script src="tmdb.config.js"></script>
 <script>
 "use strict";
 
@@ -325,17 +326,20 @@
 const VIDEO_EXT = new Set([".mkv",".mp4",".avi",".mov",".wmv",".m4v"]);
 const SUBTITLE_EXT = new Set([".srt"]);
 const EPISODE_PATTERN = /^(.*?)[.\s_-]+((?:S\d{1,2}E\d{1,2}|\d{1,2}x\d{2}))/i;
-const TVDB_API_KEY = "ec2b6fb8-6a17-41eb-b245-c34a922f910e";
+// Loaded from tmdb.config.js (git-ignored, kept out of this public repo) —
+// see tmdb.config.example.js for the expected format.
+const TMDB_API_KEY = (typeof window !== "undefined" && window.TMDB_API_KEY) || "";
+const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500";
 const HEBREW_RE = /[\u0590-\u05FF]/;
 
-// Manual TVDB id overrides for series that can't be found reliably through
-// the /search endpoint — most often because TVDB has no English name or
-// alias recorded for them yet (e.g. Israeli shows only listed under their
+// Manual TMDB id overrides for series that can't be found reliably through
+// the /search/tv endpoint — most often because a show has no English name
+// or alias recorded for it yet (e.g. Israeli shows only listed under their
 // Hebrew name), so no amount of query-massaging or name-matching will find
 // them by text. Key is the exact seriesFolder text (as cleanSeriesName
-// produces it); value is the TVDB series id from its thetvdb.com URL.
+// produces it); value is the TMDB series id from its themoviedb.org URL.
 const MANUAL_SHOW_OVERRIDES = {
-  "On Standby": 480043,   // TVDB name is "בודקת" — no English name/alias on file
+  "On Standby": 329297,   // TMDB name is "בודקת" (Bodeket) — no English name/alias on file
 };
 
 // ---------------------------------------------------------------------------
@@ -424,65 +428,43 @@ function formatSize(n){
 }
 
 // ---------------------------------------------------------------------------
-// TheTVDB v4 lookup (ported, best-effort — degrades silently on CORS failure)
+// TMDB v3 lookup (ported, best-effort — degrades silently on CORS failure)
 // ---------------------------------------------------------------------------
-let tvdbToken = null;
-let tvdbBlocked = false;
-const tvdbShowCache = new Map();
+let tmdbBlocked = false;
+const tmdbShowCache = new Map();
 let seriesPosterMap = new Map();
 
-async function tvdbLogin(){
-  if (tvdbToken) return tvdbToken;
-  try{
-    const res = await fetch("https://api4.thetvdb.com/v4/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ apikey: TVDB_API_KEY })
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    tvdbToken = data?.data?.token || null;
-    return tvdbToken;
-  } catch(e){
-    tvdbBlocked = true;
-    return null;
-  }
+function tmdbPosterUrl(posterPath){
+  return posterPath ? `${TMDB_IMAGE_BASE}${posterPath}` : null;
 }
-async function tvdbGet(url, retries=2){
-  const token = await tvdbLogin();
-  if (!token) return null;
+async function tmdbGet(url, retries=2){
+  if (!TMDB_API_KEY){ tmdbBlocked = true; return null; }
   for (let attempt=0; attempt<retries; attempt++){
     try{
-      const res = await fetch(url, { headers: { "Authorization": `Bearer ${token}` } });
+      const res = await fetch(url);
       if (res.status === 429){
         await new Promise(r => setTimeout(r, 1000*(attempt+1)));
-        continue;
-      }
-      if (res.status === 401 && attempt === 0){
-        tvdbToken = null;
-        await tvdbLogin();
         continue;
       }
       if (!res.ok) return null;
       return await res.json();
     } catch(e){
-      tvdbBlocked = true;
+      tmdbBlocked = true;
       return null;
     }
   }
   return null;
 }
 function looksLikeMatch(query, candidateName){
-  // Sanity-check TVDB's own top pick against the text we actually searched
-  // for. TVDB's fuzzy search can return a "least bad" result even when
-  // nothing good matches — e.g. a query of "On Standby" (a show with no
-  // English name/alias on TVDB) can score "On a Stand", a completely
-  // unrelated show, as its best guess purely from letter overlap.
-  // Requiring every real word of the query to also appear as a whole word
-  // in the candidate's name catches that, while still allowing the
-  // candidate to have extra words the query didn't ("The", a subtitle,
-  // etc.) — normal, and shouldn't be rejected. Numeric tokens (years) are
-  // ignored; those are handled separately via expectedYear.
+  // Sanity-check TMDB's own top pick against the text we actually searched
+  // for. TMDB's search can return a "least bad" result even when nothing
+  // good matches — e.g. a query of "On Standby" (a show with no English
+  // name/alias on TMDB) can return a completely unrelated show as its top
+  // hit purely from letter overlap. Requiring every real word of the query
+  // to also appear as a whole word in the candidate's name catches that,
+  // while still allowing the candidate to have extra words the query didn't
+  // ("The", a subtitle, etc.) — normal, and shouldn't be rejected. Numeric
+  // tokens (years) are ignored; those are handled separately via expectedYear.
   const words = s => new Set((s.toLowerCase().match(/[a-z0-9]+/g) || []).filter(w => !/^\d+$/.test(w)));
   const queryWords = words(query);
   if (!queryWords.size) return true;
@@ -491,48 +473,47 @@ function looksLikeMatch(query, candidateName){
   return true;
 }
 async function fetchSeriesById(id){
-  const data = await tvdbGet(`https://api4.thetvdb.com/v4/series/${id}`);
-  const series = data?.data;
-  if (!series) return null;
-  return { id, name: series.name || "", posterUrl: series.image || null };
+  const data = await tmdbGet(`https://api.themoviedb.org/3/tv/${id}?api_key=${TMDB_API_KEY}`);
+  if (!data || data.id == null) return null;
+  return { id, name: data.name || "", posterUrl: tmdbPosterUrl(data.poster_path) };
 }
 async function searchShowId(query, expectedYear){
-  const data = await tvdbGet(`https://api4.thetvdb.com/v4/search?query=${encodeURIComponent(query)}&type=series`);
-  const results = data?.data;
+  const data = await tmdbGet(`https://api.themoviedb.org/3/search/tv?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(query)}`);
+  const results = data?.results;
   if (!Array.isArray(results) || !results.length) return null;
-  // When the release name carried a year, prefer a candidate whose TVDB
-  // year matches it over whichever candidate merely scored highest —
-  // two unrelated shows can share the exact same title (e.g. "Betrayal"
-  // 2013 vs 2023), and a bare fuzzy-score pick will silently grab the
-  // wrong one. Only fall back to pure score when no candidate's year
-  // matches (or the show has no year on record).
+  // When the release name carried a year, prefer a candidate whose TMDB
+  // first-air year matches it over whichever candidate merely scored
+  // highest — two unrelated shows can share the exact same title (e.g.
+  // "Betrayal" 2013 vs 2023), and a bare popularity pick will silently
+  // grab the wrong one. Only fall back to pure popularity when no
+  // candidate's year matches (or the show has no air date on record).
   let pool = results;
   if (expectedYear){
-    const yearMatches = results.filter(r => String(r.year || "") === String(expectedYear));
+    const yearMatches = results.filter(r => (r.first_air_date || "").slice(0,4) === String(expectedYear));
     if (yearMatches.length) pool = yearMatches;
   }
-  const best = pool.reduce((a,b) => (b.score||0) > (a.score||0) ? b : a);
-  if (!best?.tvdb_id) return null;
+  const best = pool.reduce((a,b) => (b.popularity||0) > (a.popularity||0) ? b : a);
+  if (best?.id == null) return null;
   if (!looksLikeMatch(query, best.name || "")) return null;
   return {
-    id: parseInt(best.tvdb_id,10),
+    id: best.id,
     name: best.name || "",
-    posterUrl: best.image_url || best.image || null,
+    posterUrl: tmdbPosterUrl(best.poster_path),
   };
 }
 async function getShowId(seriesFolder){
-  if (tvdbShowCache.has(seriesFolder)) return tvdbShowCache.get(seriesFolder);
+  if (tmdbShowCache.has(seriesFolder)) return tmdbShowCache.get(seriesFolder);
   if (MANUAL_SHOW_OVERRIDES[seriesFolder] != null){
     const result = await fetchSeriesById(MANUAL_SHOW_OVERRIDES[seriesFolder])
       || { id: MANUAL_SHOW_OVERRIDES[seriesFolder], name: `${seriesFolder} (manual override)`, posterUrl: null };
-    tvdbShowCache.set(seriesFolder, result);
+    tmdbShowCache.set(seriesFolder, result);
     return result;
   }
   // Try the "cleanest" queries first — a trailing year or country code is
   // usually part of the release name, not the show's actual title, and
   // searching with it still attached can return a confident-looking but
-  // wrong fuzzy match (e.g. a different, unrelated show), which would stop
-  // us from ever trying the accurate query. The raw name is kept as a
+  // wrong match (e.g. a different, unrelated show), which would stop us
+  // from ever trying the accurate query. The raw name is kept as a
   // fallback in case the stripped year genuinely was part of the title.
   const yearMatch = seriesFolder.match(/\s+(\d{4})$/);
   const expectedYear = yearMatch ? yearMatch[1] : null;
@@ -554,39 +535,26 @@ async function getShowId(seriesFolder){
   let result = null;
   for (const q of uniq){
     result = await searchShowId(q, expectedYear);
-    if (result || tvdbBlocked) break;
+    if (result || tmdbBlocked) break;
   }
-  tvdbShowCache.set(seriesFolder, result);
+  tmdbShowCache.set(seriesFolder, result);
   return result;
 }
-async function findEpisodeViaFullList(showId, season, episode){
-  let page = 0;
-  while (true){
-    const data = await tvdbGet(`https://api4.thetvdb.com/v4/series/${showId}/episodes/official?page=${page}`);
-    const episodes = data?.data?.episodes;
-    if (!Array.isArray(episodes) || !episodes.length) return null;
-    const found = episodes.find(ep => ep.seasonNumber === season && ep.number === episode);
-    if (found) return found;
-    if (data?.links?.next == null) return null;
-    page += 1;
-    if (page > 50) return null; // safety cap
-  }
-}
 async function fetchEpisodeName(seriesFolder, episodeTag, log){
-  if (tvdbBlocked) return null;
+  if (tmdbBlocked) return null;
   if (isHebrew(seriesFolder)) return null;
   const m = episodeTag.match(/^S(\d+)E(\d+)$/i);
   if (!m) return null;
   const season = parseInt(m[1],10), episode = parseInt(m[2],10);
   const show = await getShowId(seriesFolder);
-  if (!show) { log(`[TheTVDB] ${seriesFolder} ${episodeTag} -> no matching series found`, "dim"); return null; }
+  if (!show) { log(`[TMDB] ${seriesFolder} ${episodeTag} -> no matching series found`, "dim"); return null; }
   if (show.posterUrl) seriesPosterMap.set(seriesFolder, show.posterUrl);
-  const data = await findEpisodeViaFullList(show.id, season, episode);
+  const data = await tmdbGet(`https://api.themoviedb.org/3/tv/${show.id}/season/${season}/episode/${episode}?api_key=${TMDB_API_KEY}`);
   const name = (data?.name || "").trim();
-  if (!name) { log(`[TheTVDB] ${seriesFolder} ${episodeTag} -> "${show.name}" found but no episode name`, "dim"); return null; }
+  if (!name) { log(`[TMDB] ${seriesFolder} ${episodeTag} -> "${show.name}" found but no episode name`, "dim"); return null; }
   if (isHebrew(name)) return null;
   const safe = sanitizeEpisodeName(name);
-  log(`[TheTVDB] ${seriesFolder} ${episodeTag} -> "${show.name}" = ${safe}`, "dim");
+  log(`[TMDB] ${seriesFolder} ${episodeTag} -> "${show.name}" = ${safe}`, "dim");
   return safe;
 }
 
@@ -685,8 +653,8 @@ const els = {
   libBtnLabel: document.getElementById("libBtnLabel"),
   resetBtn: document.getElementById("resetBtn"),
   scanBtn: document.getElementById("scanBtn"),
-  tvdbCheck: document.getElementById("tvdbCheck"),
-  tvdbBanner: document.getElementById("tvdbBanner"),
+  tmdbCheck: document.getElementById("tmdbCheck"),
+  tmdbBanner: document.getElementById("tmdbBanner"),
   scanResults: document.getElementById("scanResults"),
   executePanel: document.getElementById("executePanel"),
   runBtn: document.getElementById("runBtn"),
@@ -866,12 +834,12 @@ els.resetBtn.addEventListener("click", async () => {
 els.scanBtn.addEventListener("click", async () => {
   els.scanBtn.disabled = true;
   els.scanResults.innerHTML = "<div class=\"empty-hint\">Scanning…</div>";
-  els.tvdbBanner.classList.remove("show");
-  tvdbBlocked = false;
+  els.tmdbBanner.classList.remove("show");
+  tmdbBlocked = false;
   seriesPosterMap = new Map();
   const t0 = performance.now();
 
-  const useTvdb = els.tvdbCheck.checked;
+  const useTmdb = els.tmdbCheck.checked;
   const found = [];
   const epNameCache = new Map();
 
@@ -880,10 +848,10 @@ els.scanBtn.addEventListener("click", async () => {
     const parsed = parseFilename(name);
     if (!parsed) continue;
     const key = `${parsed.seriesFolder}::${parsed.episodeTag}`;
-    if (useTvdb && !epNameCache.has(key)){
+    if (useTmdb && !epNameCache.has(key)){
       epNameCache.set(key, await fetchEpisodeName(parsed.seriesFolder, parsed.episodeTag, (t)=>{}));
     }
-    const episodeName = useTvdb ? (epNameCache.get(key) || null) : null;
+    const episodeName = useTmdb ? (epNameCache.get(key) || null) : null;
     const size = (await handle.getFile()).size;
     found.push({
       handle, originalName: name,
@@ -894,7 +862,7 @@ els.scanBtn.addEventListener("click", async () => {
     });
   }
 
-  if (tvdbBlocked) els.tvdbBanner.classList.add("show");
+  if (tmdbBlocked) els.tmdbBanner.classList.add("show");
 
   // Sync SRT names to their paired video file
   const videoMap = new Map();
