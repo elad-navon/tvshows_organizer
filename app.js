@@ -352,6 +352,7 @@ const els = {
   statPending: document.getElementById("statPending"),
   statProcessed: document.getElementById("statProcessed"),
   statExecTime: document.getElementById("statExecTime"),
+  themeToggle: document.getElementById("themeToggle"),
 };
 let lastScanSeconds = 0;
 
@@ -397,6 +398,13 @@ function logLineHTML(html, cls){
   els.log.scrollTop = els.log.scrollHeight;
   return row;
 }
+els.themeToggle.addEventListener("click", () => {
+  const isLight = document.documentElement.getAttribute("data-theme") === "light";
+  const next = isLight ? "dark" : "light";
+  if (next === "dark") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", "light");
+  try { localStorage.setItem("uiTheme", next); } catch (e) {}
+});
 els.clearLogBtn.addEventListener("click", () => {
   els.log.innerHTML = "";
   els.log.style.display = "none";
@@ -715,6 +723,9 @@ els.runBtn.addEventListener("click", async () => {
   let success = 0;
   const errors = [];
   const runStart = performance.now();
+  const execTimer = setInterval(() => {
+    els.statExecTime.textContent = formatDuration((performance.now() - runStart) / 1000);
+  }, 100);
 
   const updateExecStats = () => {
     els.statProcessed.textContent = String(success);
@@ -749,6 +760,7 @@ els.runBtn.addEventListener("click", async () => {
     }
   }
 
+  clearInterval(execTimer);
   const elapsedSeconds = (performance.now() - runStart) / 1000;
   els.statExecTime.textContent = formatDuration(elapsedSeconds);
 
