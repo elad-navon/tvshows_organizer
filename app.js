@@ -303,6 +303,11 @@ async function copyFileWithProgress(file, destDirHandle, destName, onProgress){
       lastUpdate = now;
     }
   }
+  // All bytes are written, but the browser still has to flush the writable
+  // stream and atomically swap it into place — on a network/NAS destination
+  // or with antivirus scanning the new file, this can take many seconds
+  // with no further progress events, so tell the user we're still working.
+  onProgress(total, total, start, "finalizing");
   await writable.close();
 }
 async function moveFile(srcDirHandle, srcName, destDirHandle, destName, onProgress){
@@ -425,6 +430,10 @@ function progressRow(){
   const text = row.querySelector(".pbar-text");
   return {
     update(copied, total, start, instant){
+      if (instant === "finalizing"){
+        text.innerHTML = `100% <span class="dim">— finishing write… (can take a while for large/network folders)</span>`;
+        return;
+      }
       if (instant){
         fill.classList.add("done");
         fill.style.width = "100%";
