@@ -589,10 +589,20 @@ els.resetBtn.addEventListener("click", async () => {
   await refreshFolderUI();
 });
 
+function safeSetItem(key, value){
+  try{
+    localStorage.setItem(key, value);
+    return true;
+  } catch(e){
+    console.error(`localStorage.setItem("${key}") failed — storage quota likely full for this site.`, e);
+    return false;
+  }
+}
+
 els.tmdbKeyInput.value = TMDB_API_KEY;
 els.tmdbKeyInput.addEventListener("input", () => {
   TMDB_API_KEY = els.tmdbKeyInput.value.trim();
-  localStorage.setItem("tmdbApiKey", TMDB_API_KEY);
+  safeSetItem("tmdbApiKey", TMDB_API_KEY);
 });
 
 async function refreshHelperUI(){
@@ -607,16 +617,22 @@ async function refreshHelperUI(){
 }
 els.helperCheck.checked = localStorage.getItem("helperEnabled") === "1";
 els.helperCheck.addEventListener("change", () => {
-  localStorage.setItem("helperEnabled", els.helperCheck.checked ? "1" : "0");
+  safeSetItem("helperEnabled", els.helperCheck.checked ? "1" : "0");
   refreshHelperUI();
 });
 els.helperSourcePath.value = localStorage.getItem("helperSourcePath") || "";
 els.helperSourcePath.addEventListener("input", () => {
-  localStorage.setItem("helperSourcePath", els.helperSourcePath.value.trim());
+  if (!safeSetItem("helperSourcePath", els.helperSourcePath.value.trim())){
+    els.helperStatus.textContent = "Couldn't save — this browser's storage for this site is full";
+    els.helperDot.className = "dot warn";
+  }
 });
 els.helperLibraryPath.value = localStorage.getItem("helperLibraryPath") || "";
 els.helperLibraryPath.addEventListener("input", () => {
-  localStorage.setItem("helperLibraryPath", els.helperLibraryPath.value.trim());
+  if (!safeSetItem("helperLibraryPath", els.helperLibraryPath.value.trim())){
+    els.helperStatus.textContent = "Couldn't save — this browser's storage for this site is full";
+    els.helperDot.className = "dot warn";
+  }
 });
 
 (async function init(){
