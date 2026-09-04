@@ -11,4 +11,8 @@ if errorlevel 1 (
 )
 
 python helper.py
-pause
+if errorlevel 1 (
+  echo.
+  echo The helper exited with an error - see above.
+  pause
+)
