@@ -50,7 +50,14 @@
     </div>
     <div class="actions" style="margin-top:14px;">
       <button class="ghost small" id="resetBtn">Forget saved folders</button>
+      <label><input type="checkbox" id="helperCheck"> Use local helper for native-speed moves</label>
+      <span class="status-row" id="helperStatusRow" style="display:none; margin-bottom:0;"><span class="dot" id="helperDot"></span><span class="status-text" id="helperStatus">—</span></span>
     </div>
+    <div class="actions" id="helperPaths" style="display:none; margin-top:10px;">
+      <label>Source real path: <input type="text" class="key-input" id="helperSourcePath" placeholder="e.g. C:\Users\you\Downloads" autocomplete="off" spellcheck="false" style="width:280px;"></label>
+      <label>Library real path: <input type="text" class="key-input" id="helperLibraryPath" placeholder="e.g. H:\TV Shows" autocomplete="off" spellcheck="false" style="width:280px;"></label>
+    </div>
+    <div class="status-text" id="helperHint" style="display:none; margin-top:8px;">Run <b>start_helper.bat</b> (in the app folder) once and leave it running in the background — it moves files with a native OS rename/copy instead of the slower in-browser copy.</div>
   </div>
 
   <div class="panel">

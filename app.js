@@ -262,20 +262,21 @@ async function resolveLibraryDest(libraryDirHandle, seriesFolder, episodeTag){
 
   if (!exists){
     seriesLibDirHandle = await libraryDirHandle.getDirectoryHandle(seriesFolder, {create:true});
-    return { dirHandle: seriesLibDirHandle, situation: "new_series" };
+    return { dirHandle: seriesLibDirHandle, situation: "new_series", relDir: [seriesFolder] };
   }
   const seasonDir = await findSeasonFolder(seriesLibDirHandle, seasonNum);
-  if (seasonDir) return { dirHandle: seasonDir, situation: "season_found" };
+  if (seasonDir) return { dirHandle: seasonDir, situation: "season_found", relDir: [seriesFolder, seasonDir.name] };
 
   let hasSubfolders = false;
   for await (const [, handle] of seriesLibDirHandle.entries()){
     if (handle.kind === "directory"){ hasSubfolders = true; break; }
   }
   if (hasSubfolders){
-    const newSeasonDir = await seriesLibDirHandle.getDirectoryHandle(`Season ${String(seasonNum).padStart(2,"0")}`, {create:true});
-    return { dirHandle: newSeasonDir, situation: "season_created" };
+    const seasonName = `Season ${String(seasonNum).padStart(2,"0")}`;
+    const newSeasonDir = await seriesLibDirHandle.getDirectoryHandle(seasonName, {create:true});
+    return { dirHandle: newSeasonDir, situation: "season_created", relDir: [seriesFolder, seasonName] };
   }
-  return { dirHandle: seriesLibDirHandle, situation: "flat_series" };
+  return { dirHandle: seriesLibDirHandle, situation: "flat_series", relDir: [seriesFolder] };
 }
 
 // ---------------------------------------------------------------------------
@@ -325,6 +326,36 @@ async function moveFile(srcDirHandle, srcName, destDirHandle, destName, onProgre
 }
 
 // ---------------------------------------------------------------------------
+// Local helper (optional) — a tiny script the user runs on their own machine
+// (see helper.py) that moves files with a native OS rename/copy instead of
+// going through the browser's File System Access API. Bypassed entirely
+// unless the user opts in and configures real filesystem paths, since the
+// browser has no way to learn the real path behind a picked folder handle.
+// ---------------------------------------------------------------------------
+const HELPER_BASE = "http://127.0.0.1:8765";
+async function pingHelper(){
+  try{
+    const res = await fetch(`${HELPER_BASE}/ping`, { signal: AbortSignal.timeout(1000) });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return !!data.ok;
+  } catch(e){ return false; }
+}
+function joinPath(...parts){
+  return parts.map(p => String(p).replace(/[\\/]+$/, "")).join("\\");
+}
+async function moveFileViaHelper(srcPath, destPath, onProgress){
+  const res = await fetch(`${HELPER_BASE}/move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ src: srcPath, dest: destPath }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.error || `Local helper move failed (HTTP ${res.status})`);
+  onProgress(1, 1, performance.now(), "native");
+}
+
+// ---------------------------------------------------------------------------
 // UI wiring
 // ---------------------------------------------------------------------------
 const els = {
@@ -339,6 +370,14 @@ const els = {
   libBtn: document.getElementById("libBtn"),
   libBtnLabel: document.getElementById("libBtnLabel"),
   resetBtn: document.getElementById("resetBtn"),
+  helperCheck: document.getElementById("helperCheck"),
+  helperStatusRow: document.getElementById("helperStatusRow"),
+  helperDot: document.getElementById("helperDot"),
+  helperStatus: document.getElementById("helperStatus"),
+  helperPaths: document.getElementById("helperPaths"),
+  helperSourcePath: document.getElementById("helperSourcePath"),
+  helperLibraryPath: document.getElementById("helperLibraryPath"),
+  helperHint: document.getElementById("helperHint"),
   scanBtn: document.getElementById("scanBtn"),
   tmdbCheck: document.getElementById("tmdbCheck"),
   tmdbKeyInput: document.getElementById("tmdbKeyInput"),
@@ -432,6 +471,12 @@ function progressRow(){
     update(copied, total, start, instant){
       if (instant === "finalizing"){
         text.innerHTML = `100% <span class="dim">— finishing write… (can take a while for large/network folders)</span>`;
+        return;
+      }
+      if (instant === "native"){
+        fill.classList.add("done");
+        fill.style.width = "100%";
+        text.innerHTML = `100% <span class="dim">— via local helper</span>`;
         return;
       }
       if (instant){
@@ -528,10 +573,35 @@ els.tmdbKeyInput.addEventListener("input", () => {
   localStorage.setItem("tmdbApiKey", TMDB_API_KEY);
 });
 
+async function refreshHelperUI(){
+  const enabled = els.helperCheck.checked;
+  els.helperPaths.style.display = enabled ? "flex" : "none";
+  els.helperHint.style.display = enabled ? "block" : "none";
+  els.helperStatusRow.style.display = enabled ? "flex" : "none";
+  if (!enabled) return;
+  const ok = await pingHelper();
+  els.helperDot.className = ok ? "dot ok" : "dot warn";
+  els.helperStatus.textContent = ok ? "Helper connected" : "Helper not reachable — start start_helper.bat";
+}
+els.helperCheck.checked = localStorage.getItem("helperEnabled") === "1";
+els.helperCheck.addEventListener("change", () => {
+  localStorage.setItem("helperEnabled", els.helperCheck.checked ? "1" : "0");
+  refreshHelperUI();
+});
+els.helperSourcePath.value = localStorage.getItem("helperSourcePath") || "";
+els.helperSourcePath.addEventListener("input", () => {
+  localStorage.setItem("helperSourcePath", els.helperSourcePath.value.trim());
+});
+els.helperLibraryPath.value = localStorage.getItem("helperLibraryPath") || "";
+els.helperLibraryPath.addEventListener("input", () => {
+  localStorage.setItem("helperLibraryPath", els.helperLibraryPath.value.trim());
+});
+
 (async function init(){
   sourceHandle = await idbGet("source");
   libraryHandle = await idbGet("library");
   await refreshFolderUI();
+  await refreshHelperUI();
 })();
 
 // ---------------------------------------------------------------------------
@@ -741,11 +811,23 @@ els.runBtn.addEventListener("click", async () => {
     els.statPending.textContent = String(total - success - errors.length);
   };
 
+  let useHelper = false;
+  const helperSrcRoot = els.helperSourcePath.value.trim();
+  const helperLibRoot = els.helperLibraryPath.value.trim();
+  if (els.helperCheck.checked){
+    if (helperSrcRoot && helperLibRoot){
+      useHelper = await pingHelper();
+      if (!useHelper) logLineHTML(`⚠ Local helper enabled but not reachable — using the browser for this run instead.`, "warn");
+    } else {
+      logLineHTML(`⚠ Local helper enabled but the source/library paths aren't set — using the browser for this run instead.`, "warn");
+    }
+  }
+
   for (const f of toProcess){
     try{
       // Resolve straight to the final library destination — no local staging
       // folder, so every file's bytes are read and written exactly once.
-      const { dirHandle, situation } = await resolveLibraryDest(libraryHandle, f.seriesFolder, f.episodeTag);
+      const { dirHandle, situation, relDir } = await resolveLibraryDest(libraryHandle, f.seriesFolder, f.episodeTag);
 
       let destExists = false;
       try{ await dirHandle.getFileHandle(f.newName, {create:false}); destExists = true; } catch(e){}
@@ -758,8 +840,15 @@ els.runBtn.addEventListener("click", async () => {
 
       logLineHTML(`${VIDEO_EXT.has(f.ext) ? "🎬" : "📄"} ${breakable(f.originalName)}  [${situation}]`, "cyan");
       const pr = progressRow();
-      await moveFile(sourceHandle, f.originalName, dirHandle, f.newName,
-        (copied, total, start, instant) => pr.update(copied, total, start, instant));
+      if (useHelper){
+        const srcPath = joinPath(helperSrcRoot, f.originalName);
+        const destPath = joinPath(helperLibRoot, ...relDir, f.newName);
+        await moveFileViaHelper(srcPath, destPath,
+          (copied, total, start, instant) => pr.update(copied, total, start, instant));
+      } else {
+        await moveFile(sourceHandle, f.originalName, dirHandle, f.newName,
+          (copied, total, start, instant) => pr.update(copied, total, start, instant));
+      }
       success += 1;
       updateExecStats();
     } catch(e){
