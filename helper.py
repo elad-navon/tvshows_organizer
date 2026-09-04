@@ -22,12 +22,16 @@ makes it call this server instead of the browser's own (slower) path.
 
 Start with:  python helper.py
    or simply double-click start_helper.bat
-Stop with:   close this window, or Ctrl+C.
+Stop with:   close this window, Ctrl+C, or just leave it idle — it shuts
+             itself down automatically after IDLE_TIMEOUT_SECONDS with no
+             requests from the page (a poll during an active move counts
+             as activity, so this never fires mid-transfer).
 """
 import json
 import os
 import shutil
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -35,6 +39,27 @@ from urllib.parse import urlparse, parse_qs
 HOST = "127.0.0.1"
 PORT = 8765
 CHUNK_SIZE = 8 * 1024 * 1024  # 8MB
+IDLE_TIMEOUT_SECONDS = 60
+
+_last_activity = time.monotonic()
+_activity_lock = threading.Lock()
+
+
+def _touch():
+    global _last_activity
+    with _activity_lock:
+        _last_activity = time.monotonic()
+
+
+def _idle_watchdog(server):
+    while True:
+        time.sleep(5)
+        with _activity_lock:
+            idle_for = time.monotonic() - _last_activity
+        if idle_for >= IDLE_TIMEOUT_SECONDS:
+            print(f"\nNo activity for {IDLE_TIMEOUT_SECONDS}s - shutting down.")
+            server.shutdown()
+            return
 
 # Only these origins are ever allowed to see a response from this server —
 # the app opened as a local file, from GitHub Pages, or from itself. A page
@@ -106,11 +131,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_OPTIONS(self):
+        _touch()
         self.send_response(204)
         self._cors_headers()
         self.end_headers()
 
     def do_GET(self):
+        _touch()
         parsed = urlparse(self.path)
         if parsed.path == "/ping":
             self._send_json(200, {"ok": True})
@@ -131,6 +158,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):
+        _touch()
         if self.path != "/move":
             self._send_json(404, {"ok": False, "error": "not found"})
             return
@@ -172,7 +200,8 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"TV Organizer helper listening on http://{HOST}:{PORT} (this machine only)")
-    print("Keep this window open while using the app. Press Ctrl+C to stop.")
+    print(f"Shuts down automatically after {IDLE_TIMEOUT_SECONDS}s of inactivity, or press Ctrl+C to stop now.")
+    threading.Thread(target=_idle_watchdog, args=(server,), daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
