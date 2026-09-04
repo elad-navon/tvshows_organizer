@@ -9,6 +9,13 @@ server on 127.0.0.1 only (nothing outside this machine can reach it) so
 the page can ask it to move a file with a native OS rename/copy instead
 — the same thing "move" in CMD does, and just as fast.
 
+A move is started with POST /move, which returns immediately with a job
+id and runs the actual work in a background thread; the browser polls
+GET /progress?job=<id> a few times a second to drive its progress bar.
+When source and destination are on the same drive this finishes on the
+very first poll (a rename is a metadata-only operation, not a copy) —
+across drives it streams the file in chunks so real progress is reported.
+
 This is entirely optional. The app works fine without it; turning on
 "Use local helper for native-speed moves" in the Folders panel is what
 makes it call this server instead of the browser's own (slower) path.
@@ -20,10 +27,14 @@ Stop with:   close this window, or Ctrl+C.
 import json
 import os
 import shutil
+import threading
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 
 HOST = "127.0.0.1"
 PORT = 8765
+CHUNK_SIZE = 8 * 1024 * 1024  # 8MB
 
 # Only these origins are ever allowed to see a response from this server —
 # the app opened as a local file, from GitHub Pages, or from itself. A page
@@ -35,6 +46,46 @@ ALLOWED_ORIGIN_PREFIXES = (
     "http://127.0.0.1",
     "http://localhost",
 )
+
+jobs = {}  # job_id -> {"copied": int, "total": int, "done": bool, "error": str|None}
+jobs_lock = threading.Lock()
+
+
+def run_move(job_id, src, dest):
+    try:
+        total = os.path.getsize(src)
+        with jobs_lock:
+            jobs[job_id]["total"] = total
+
+        try:
+            # Same drive: a metadata-only rename, effectively instant —
+            # no chunk loop, nothing meaningful to report progress on.
+            os.rename(src, dest)
+            with jobs_lock:
+                jobs[job_id]["copied"] = total
+                jobs[job_id]["done"] = True
+            return
+        except OSError:
+            pass  # different drives (or some other rename failure) — stream-copy below
+
+        copied = 0
+        with open(src, "rb") as fsrc, open(dest, "wb") as fdst:
+            while True:
+                buf = fsrc.read(CHUNK_SIZE)
+                if not buf:
+                    break
+                fdst.write(buf)
+                copied += len(buf)
+                with jobs_lock:
+                    jobs[job_id]["copied"] = copied
+        shutil.copystat(src, dest)
+        os.remove(src)
+        with jobs_lock:
+            jobs[job_id]["done"] = True
+    except OSError as e:
+        with jobs_lock:
+            jobs[job_id]["error"] = str(e)
+            jobs[job_id]["done"] = True
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -60,10 +111,24 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if self.path == "/ping":
+        parsed = urlparse(self.path)
+        if parsed.path == "/ping":
             self._send_json(200, {"ok": True})
-        else:
-            self._send_json(404, {"ok": False, "error": "not found"})
+            return
+        if parsed.path == "/progress":
+            job_id = parse_qs(parsed.query).get("job", [""])[0]
+            with jobs_lock:
+                job = jobs.get(job_id)
+                job = dict(job) if job else None
+            if job is None:
+                self._send_json(404, {"ok": False, "error": "unknown job"})
+                return
+            self._send_json(200, {"ok": True, **job})
+            if job["done"]:
+                with jobs_lock:
+                    jobs.pop(job_id, None)
+            return
+        self._send_json(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):
         if self.path != "/move":
@@ -90,10 +155,15 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
-            shutil.move(src, dest)
-            self._send_json(200, {"ok": True})
         except OSError as e:
             self._send_json(500, {"ok": False, "error": str(e)})
+            return
+
+        job_id = uuid.uuid4().hex
+        with jobs_lock:
+            jobs[job_id] = {"copied": 0, "total": 0, "done": False, "error": None}
+        threading.Thread(target=run_move, args=(job_id, src, dest), daemon=True).start()
+        self._send_json(200, {"ok": True, "job": job_id})
 
     def log_message(self, fmt, *args):
         print(f"[helper] {self.address_string()} - {fmt % args}")

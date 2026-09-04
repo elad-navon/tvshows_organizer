@@ -345,14 +345,36 @@ function joinPath(...parts){
   return parts.map(p => String(p).replace(/[\\/]+$/, "")).join("\\");
 }
 async function moveFileViaHelper(srcPath, destPath, onProgress){
-  const res = await fetch(`${HELPER_BASE}/move`, {
+  const startRes = await fetch(`${HELPER_BASE}/move`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ src: srcPath, dest: destPath }),
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.ok) throw new Error(data.error || `Local helper move failed (HTTP ${res.status})`);
-  onProgress(1, 1, performance.now(), "native");
+  const startData = await startRes.json().catch(() => ({}));
+  if (!startRes.ok || !startData.ok || !startData.job) throw new Error(startData.error || `Local helper move failed (HTTP ${startRes.status})`);
+
+  // Same-drive moves are a metadata-only rename with nothing to report
+  // progress on — they're usually already done by the first poll below,
+  // in which case we show the same "instant" treatment as the browser's
+  // own same-folder fast path instead of a progress bar that never moves.
+  const start = performance.now();
+  let sawProgress = false;
+  while (true){
+    await new Promise(r => setTimeout(r, 150));
+    const res = await fetch(`${HELPER_BASE}/progress?job=${encodeURIComponent(startData.job)}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || `Local helper progress check failed (HTTP ${res.status})`);
+    if (data.error) throw new Error(data.error);
+    if (data.done){
+      if (!sawProgress) onProgress(1, 1, performance.now(), "native");
+      else onProgress(data.total || 1, data.total || 1, start);
+      return;
+    }
+    if (data.total > 0){
+      sawProgress = true;
+      onProgress(data.copied, data.total, start);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
