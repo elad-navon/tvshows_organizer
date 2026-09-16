@@ -123,7 +123,12 @@ async function tmdbGet(url, retries=2){
   if (!TMDB_API_KEY){ tmdbBlocked = true; return null; }
   for (let attempt=0; attempt<retries; attempt++){
     try{
-      const res = await fetch(url);
+      // no-store: TMDB's API responses are CDN-cached, so a plain fetch()
+      // of the same URL shortly after a first request (very likely right
+      // after a show airs, while episode data is still being filled in)
+      // can silently return the browser's stale cached copy instead of
+      // hitting TMDB again, even on a fresh Scan.
+      const res = await fetch(url, { cache: "no-store" });
       if (res.status === 429){
         await new Promise(r => setTimeout(r, 1000*(attempt+1)));
         continue;
