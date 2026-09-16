@@ -232,8 +232,14 @@ async function fetchEpisodeName(seriesFolder, episodeTag, log){
   if (!show) { log(`[TMDB] ${seriesFolder} ${episodeTag} -> no matching series found`, "dim"); return null; }
   if (show.posterUrl) seriesPosterMap.set(seriesFolder, show.posterUrl);
   const data = await tmdbGet(`https://api.themoviedb.org/3/tv/${show.id}/season/${season}/episode/${episode}?api_key=${TMDB_API_KEY}`);
-  const name = (data?.name || "").trim();
-  if (!name) { log(`[TMDB] ${seriesFolder} ${episodeTag} -> "${show.name}" found but no episode name`, "dim"); return null; }
+  let name = (data?.name || "").trim();
+  // TMDB has no "no translation yet" error for this endpoint — when the
+  // episode hasn't been given an English title yet (common right after a
+  // show airs, even if other languages already have one) it silently
+  // returns a generic "Episode N" placeholder instead. Treat that exactly
+  // like no name at all rather than embedding it in the filename.
+  if (/^Episode\s+\d+$/i.test(name)) name = "";
+  if (!name) { log(`[TMDB] ${seriesFolder} ${episodeTag} -> "${show.name}" found but no episode name yet`, "dim"); return null; }
   if (isHebrew(name)) return null;
   const safe = sanitizeEpisodeName(name);
   log(`[TMDB] ${seriesFolder} ${episodeTag} -> "${show.name}" = ${safe}`, "dim");
