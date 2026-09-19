@@ -628,6 +628,10 @@ async function refreshHelperUI(){
   els.helperDot.className = ok ? "dot ok" : "dot warn";
   els.helperStatus.textContent = ok ? "Helper connected" : "Helper not reachable — start start_helper.bat";
 }
+// The helper shuts itself down after a stretch with no requests, so while
+// the page is open with the helper enabled, keep pinging it (this also keeps
+// the status dot honest). Closing the tab stops the pings and lets it idle out.
+setInterval(() => { if (els.helperCheck.checked) refreshHelperUI(); }, 20000);
 els.helperCheck.checked = localStorage.getItem("helperEnabled") === "1";
 els.helperCheck.addEventListener("change", () => {
   safeSetItem("helperEnabled", els.helperCheck.checked ? "1" : "0");

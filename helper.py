@@ -39,7 +39,7 @@ from urllib.parse import urlparse, parse_qs
 HOST = "127.0.0.1"
 PORT = 8765
 CHUNK_SIZE = 8 * 1024 * 1024  # 8MB
-IDLE_TIMEOUT_SECONDS = 60
+IDLE_TIMEOUT_SECONDS = 120  # > a hidden tab's throttled (~1/min) keepalive ping
 
 _last_activity = time.monotonic()
 _activity_lock = threading.Lock()
