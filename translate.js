@@ -551,8 +551,7 @@ if (typeof document !== "undefined") (function(){
       log(`⚠ Done with ${failed.length} untranslated cue(s) — download is incomplete`, "warn");
       t.retryBtn.hidden = false;
     } else {
-      log(`Done: ${outcome.translatedCues} cues translated.`, "ok");
-      TR_SRT.downloadTextFile(heOutputName(source.name), out);
+      log(`Done: ${outcome.translatedCues} cues translated — use the Download button to save the file.`, "ok");
     }
     t.runBtn.disabled = false;
   }
