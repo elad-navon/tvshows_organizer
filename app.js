@@ -484,6 +484,23 @@ els.themeToggle.addEventListener("click", () => {
   else document.documentElement.setAttribute("data-theme", "light");
   try { localStorage.setItem("uiTheme", next); } catch (e) {}
 });
+
+const TABS = ["organize", "translate", "sync"];
+function setActiveTab(name){
+  const tab = TABS.includes(name) ? name : "organize";
+  for (const btn of document.querySelectorAll(".tab-btn")){
+    const on = btn.dataset.tab === tab;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-selected", on ? "true" : "false");
+  }
+  for (const t of TABS) document.getElementById(`${t}View`).hidden = t !== tab;
+  return tab;
+}
+for (const btn of document.querySelectorAll(".tab-btn")){
+  btn.addEventListener("click", () => safeSetItem("uiTab", setActiveTab(btn.dataset.tab)));
+}
+try { setActiveTab(localStorage.getItem("uiTab")); } catch (e) { setActiveTab("organize"); }
+
 els.clearLogBtn.addEventListener("click", () => {
   els.log.innerHTML = "";
   els.log.style.display = "none";

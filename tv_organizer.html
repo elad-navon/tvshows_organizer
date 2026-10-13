@@ -27,11 +27,18 @@
     <h1><span class="hl">TV</span> Organizer</h1>
     <div class="tagline">
       <span class="tagline-line"></span>
-      <span class="tagline-text">Every Episode. Right Where It Belongs.</span>
+      <span class="tagline-text">Your Episodes, Exactly as They Should Be.</span>
       <span class="tagline-line"></span>
     </div>
   </header>
 
+  <div class="tab-bar" role="tablist" aria-label="Tools">
+    <button class="tab-btn active" id="tabOrganizeBtn" type="button" role="tab" aria-selected="true" aria-controls="organizeView" data-tab="organize">Organize files</button>
+    <button class="tab-btn" id="tabTranslateBtn" type="button" role="tab" aria-selected="false" aria-controls="translateView" data-tab="translate">Translate subtitles</button>
+    <button class="tab-btn" id="tabSyncBtn" type="button" role="tab" aria-selected="false" aria-controls="syncView" data-tab="sync">Shift subtitle timing</button>
+  </div>
+
+  <div id="organizeView" role="tabpanel" aria-labelledby="tabOrganizeBtn">
   <div class="panel">
     <h2><span class="step">1</span> Folders <span class="rule"></span></h2>
     <div class="folders">
@@ -127,11 +134,112 @@
     </div>
     <div class="summary" id="summary"></div>
   </div>
+  </div>
+
+  <div id="translateView" role="tabpanel" aria-labelledby="tabTranslateBtn" hidden>
+    <div class="panel">
+      <h2>Translate subtitles to Hebrew <span class="rule"></span></h2>
+      <div class="folder-card">
+        <div class="role"><span class="n">SRT</span> English subtitle file</div>
+        <div class="name empty" id="trFileName">No file selected</div>
+        <div class="status-row"><span class="dot" id="trFileDot"></span><span class="status-text" id="trFileStatus">—</span></div>
+        <input type="file" id="trFileInput" accept=".srt" class="visually-hidden" tabindex="-1" aria-hidden="true">
+        <button class="small" id="trFileBtn" type="button"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/></svg><span>Choose .srt file…</span></button>
+      </div>
+      <div class="actions" style="margin-top:16px;">
+        <button class="primary" id="trRunBtn" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg><span>Translate to Hebrew</span></button>
+        <label><input type="checkbox" id="trRtlCheck" checked> Fix RTL punctuation</label>
+      </div>
+      <div class="status-text" id="trEngineStatus" style="display:block; margin-top:12px;">Engine: —</div>
+      <div class="status-text" style="display:block; margin-top:4px;">Online translation sends the subtitle text to Google's translation service. If that fails, Chrome's on-device translator (when available) translates the rest locally. Your original file is never changed — the result is downloaded as a new <b>.he.srt</b> file.</div>
+      <div class="banner warn" id="trWarnBanner"></div>
+      <div class="banner err" id="trErrBanner"></div>
+
+      <div class="log-head" style="margin-top:16px;">
+        <h2 style="margin:0;">Activity Log</h2>
+        <button class="ghost small" id="trClearLogBtn" type="button"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6"/></svg><span>Clear log</span></button>
+      </div>
+      <div class="log-box">
+        <div class="log-empty" id="trLogEmpty">
+          <div class="hint-title">No activity yet</div>
+          Choose an .srt file and press Translate
+        </div>
+        <div class="log-lines" id="trLog" style="display:none;"></div>
+      </div>
+      <div class="actions" style="margin-top:14px;">
+        <button class="execute" id="trDownloadBtn" type="button" hidden><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg><span id="trDownloadLabel">Download</span></button>
+        <button class="ghost small" id="trRetryBtn" type="button" hidden>Retry untranslated cues</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="syncView" role="tabpanel" aria-labelledby="tabSyncBtn" hidden>
+    <div class="panel">
+      <h2>Shift subtitle timing <span class="rule"></span></h2>
+      <div class="folder-card">
+        <div class="role"><span class="n">SRT</span> Subtitle file</div>
+        <div class="name empty" id="syncFileName">No file selected</div>
+        <div class="status-row"><span class="dot" id="syncFileDot"></span><span class="status-text" id="syncFileStatus">—</span></div>
+        <input type="file" id="syncFileInput" accept=".srt" class="visually-hidden" tabindex="-1" aria-hidden="true">
+        <button class="small" id="syncFileBtn" type="button"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/></svg><span>Choose .srt file…</span></button>
+      </div>
+      <div class="status-text" style="display:block; margin-top:10px;">Each tool is applied to the file as you loaded it (not on top of a previous result). Your original file is never changed — the result is downloaded as a new <b>.synced</b> file.</div>
+
+      <div class="tool-section">
+        <h3>Shift — move every subtitle by the same amount</h3>
+        <div class="actions">
+          <label for="syncShiftInput">Shift by:</label>
+          <input type="text" class="key-input" id="syncShiftInput" placeholder="e.g. 1.5 or -2.3" autocomplete="off" spellcheck="false" style="width:170px;">
+          <button class="primary small" id="syncShiftBtn" type="button">Apply shift</button>
+        </div>
+        <div class="status-text" style="display:block; margin-top:8px;">Seconds, or hh:mm:ss,ms with a sign. Positive = subtitles appear later, negative = earlier.</div>
+      </div>
+
+      <div class="tool-section">
+        <h3>Linear correction — fix drift by aligning two points</h3>
+        <div class="anchor-row">
+          <span class="anchor-label">Point 1</span>
+          <input type="text" class="key-input" id="syncA1Orig" placeholder="original 00:01:12,000" autocomplete="off" spellcheck="false" aria-label="Point 1 original time">
+          <span class="anchor-arrow" aria-hidden="true">➙</span>
+          <input type="text" class="key-input" id="syncA1New" placeholder="should be 00:01:13,500" autocomplete="off" spellcheck="false" aria-label="Point 1 corrected time">
+        </div>
+        <div class="anchor-row">
+          <span class="anchor-label">Point 2</span>
+          <input type="text" class="key-input" id="syncA2Orig" placeholder="original 00:42:30,000" autocomplete="off" spellcheck="false" aria-label="Point 2 original time">
+          <span class="anchor-arrow" aria-hidden="true">➙</span>
+          <input type="text" class="key-input" id="syncA2New" placeholder="should be 00:42:33,200" autocomplete="off" spellcheck="false" aria-label="Point 2 corrected time">
+        </div>
+        <div class="actions"><button class="primary small" id="syncLinearBtn" type="button">Apply correction</button></div>
+        <div class="status-text" style="display:block; margin-top:8px;">Pick one subtitle near the start and one near the end: enter when it appears now, and when it should appear. Everything else is stretched between them.</div>
+      </div>
+
+      <div class="banner warn" id="syncWarnBanner"></div>
+      <div class="banner err" id="syncErrBanner"></div>
+
+      <div class="log-head" style="margin-top:16px;">
+        <h2 style="margin:0;">Activity Log</h2>
+        <button class="ghost small" id="syncClearLogBtn" type="button"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6"/></svg><span>Clear log</span></button>
+      </div>
+      <div class="log-box">
+        <div class="log-empty" id="syncLogEmpty">
+          <div class="hint-title">No activity yet</div>
+          Choose an .srt file, then apply a shift or a correction
+        </div>
+        <div class="log-lines" id="syncLog" style="display:none;"></div>
+      </div>
+      <div class="actions" style="margin-top:14px;">
+        <button class="execute" id="syncDownloadBtn" type="button" hidden><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg><span id="syncDownloadLabel">Download</span></button>
+      </div>
+    </div>
+  </div>
 
   <footer>TV Organizer <span>·</span> Browser version</footer>
 
 </div>
 
+<script src="srt-utils.js"></script>
+<script src="translate.js"></script>
+<script src="sync.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
