@@ -165,7 +165,6 @@ if (typeof document !== "undefined") (function(){
     }
     s.downloadLabel.textContent = `Download ${output.name}`;
     s.downloadBtn.hidden = false;
-    SYNC_SRT.downloadTextFile(output.name, text);
   }
 
   s.shiftBtn.addEventListener("click", () => {
