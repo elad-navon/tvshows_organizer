@@ -5,13 +5,15 @@
 // The work runs in the local helper (helper.py → ffsubsync), since a page
 // can't launch programs; this file only starts the job and streams its log.
 // Loaded after app.js — uses its HELPER_BASE, pingHelper, helperProblemText,
-// formatDuration, escapeHtml and safeSetItem.
+// formatDuration, escapeHtml, breakable and safeSetItem.
 // ---------------------------------------------------------------------------
 (function(){
   const $ = id => document.getElementById(id);
   const a = {
     view: $("autosyncView"), folder: $("asFolderInput"),
     helperDot: $("asHelperDot"), helperStatus: $("asHelperStatus"),
+    scanBtn: $("asScanBtn"), scanErr: $("asScanErrBanner"), scanResults: $("asScanResults"),
+    found: $("asStatFound"), skipped: $("asStatSkipped"), scanTime: $("asStatScanTime"),
     runBtn: $("asRunBtn"), stopBtn: $("asStopBtn"), err: $("asErrBanner"),
     pending: $("asStatPending"), synced: $("asStatSynced"), failed: $("asStatFailed"), time: $("asStatTime"),
     log: $("asLog"), logEmpty: $("asLogEmpty"), clearLogBtn: $("asClearLogBtn"),
@@ -20,6 +22,7 @@
 
   const POLL_MS = 1000;
   let jobId = null;
+  let scanned = null; // {folder, pairs, skipped} from the last scan of the current path
 
   const nowClock = () => new Date().toTimeString().slice(0, 8);
   function log(time, text, cls){
@@ -31,16 +34,27 @@
     a.log.appendChild(row);
     a.log.scrollTop = a.log.scrollHeight;
   }
-  function showError(msg){
-    if (msg){ a.err.textContent = msg; a.err.classList.add("show"); }
-    else { a.err.textContent = ""; a.err.classList.remove("show"); }
+  function showError(msg, el = a.err){
+    if (msg){ el.textContent = msg; el.classList.add("show"); }
+    else { el.textContent = ""; el.classList.remove("show"); }
   }
-  a.clearLogBtn.addEventListener("click", () => {
+  function clearLog(){
     a.log.innerHTML = ""; a.log.style.display = "none"; a.logEmpty.style.display = "block";
-  });
+  }
+  a.clearLogBtn.addEventListener("click", clearLog);
 
+  const folderPath = () => a.folder.value.trim().replace(/^"(.*)"$/, "$1");
   a.folder.value = localStorage.getItem("autosyncFolder") || "";
-  a.folder.addEventListener("input", () => safeSetItem("autosyncFolder", a.folder.value.trim()));
+  a.folder.addEventListener("input", () => {
+    safeSetItem("autosyncFolder", a.folder.value.trim());
+    // A scan only vouches for the folder it was run on.
+    if (scanned){
+      scanned = null;
+      resetScanStats();
+      a.scanResults.innerHTML = `<div class="empty-hint">Folder changed — scan again.</div>`;
+    }
+    a.runBtn.disabled = true;
+  });
 
   async function refreshHelper(){
     const state = await pingHelper();
@@ -55,7 +69,8 @@
   document.getElementById("tabAutosyncBtn").addEventListener("click", () => { if (!jobId) refreshHelper(); });
 
   function setRunning(on){
-    a.runBtn.disabled = on;
+    a.runBtn.disabled = on || !(scanned && scanned.pairs.length);
+    a.scanBtn.disabled = on;
     a.folder.disabled = on;
     a.stopBtn.disabled = !on;
   }
@@ -64,12 +79,75 @@
     a.synced.textContent = d.synced;
     a.failed.textContent = d.failed;
   }
+  function resetScanStats(){
+    a.found.textContent = "0"; a.skipped.textContent = "0"; a.scanTime.textContent = "0s";
+  }
 
+  // -------------------------------------------------------------- Scan
+  function renderScan(){
+    const { pairs, skipped } = scanned;
+    a.found.textContent = String(pairs.length);
+    a.skipped.textContent = String(skipped.length);
+    if (!pairs.length && !skipped.length){
+      a.scanResults.innerHTML = `<div class="empty-hint">No video files found in this folder.</div>`;
+      return;
+    }
+    const rows = [
+      ...pairs.map(p => ({ video: p.video, html: `<td class="new">${breakable(p.srt)}</td>` })),
+      ...skipped.map(s => ({ video: s.video, html: `<td class="skip">⚠ ${escapeHtml(s.reason)}</td>` })),
+    ].sort((x, y) => x.video.localeCompare(y.video))
+     .map(r => `<tr><td>${breakable(r.video)}</td><td class="arrow">→</td>${r.html}</tr>`).join("");
+    a.scanResults.innerHTML = `
+      ${pairs.length ? "" : `<div class="empty-hint">None of the videos has a matching subtitle — nothing to sync.</div>`}
+      <div class="table-scroll" style="margin-top:20px;">
+      <table>
+        <colgroup><col style="width:50%"><col style="width:40px"><col style="width:50%"></colgroup>
+        <thead><tr><th>Video file</th><th></th><th>Subtitle</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      </div>`;
+  }
+
+  a.scanBtn.addEventListener("click", async () => {
+    showError("", a.scanErr);
+    const folder = folderPath();
+    if (!folder){ showError("Enter the folder path first (e.g. C:\\Elad\\TV).", a.scanErr); return; }
+
+    scanned = null;
+    setRunning(false);
+    a.scanBtn.disabled = true;
+    a.scanResults.innerHTML = `<div class="empty-hint">Scanning…</div>`;
+    resetScanStats();
+    const t0 = performance.now();
+    try{
+      const state = await refreshHelper();
+      if (state !== "ok") throw new Error(helperProblemText(state));
+      const res = await fetch(`${HELPER_BASE}/autosync/scan`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ folder }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || !d.ok) throw new Error(d.error || `HTTP ${res.status}`);
+      scanned = { folder, pairs: d.pairs, skipped: d.skipped };
+      a.scanTime.textContent = formatDuration((performance.now() - t0) / 1000);
+      renderScan();
+      // Same as Organize: a fresh scan starts a fresh run.
+      clearLog();
+      updateTiles({ total: scanned.pairs.length, synced: 0, failed: 0 });
+      a.time.textContent = "–";
+    } catch(e){
+      a.scanResults.innerHTML = "";
+      showError(`Scan failed: ${e.message}`, a.scanErr);
+    }
+    setRunning(false);
+  });
+
+  // -------------------------------------------------------------- Sync
   a.runBtn.addEventListener("click", async () => {
     showError("");
-    const folder = a.folder.value.trim().replace(/^"(.*)"$/, "$1");
-    if (!folder){ showError("Enter the folder path first (e.g. C:\\Elad\\TV)."); return; }
+    if (!scanned) return;
+    const folder = scanned.folder;
 
+    clearLog();
     setRunning(true);
     a.time.textContent = "–";
     updateTiles({ total: 0, synced: 0, failed: 0 });

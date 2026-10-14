@@ -190,6 +190,11 @@ def pair_videos_and_subs(names):
     return pairs, [(v, problems[v]) for v in videos if v in problems]
 
 
+def scan_folder(folder):
+    names = [n for n in os.listdir(folder) if os.path.isfile(os.path.join(folder, n))]
+    return pair_videos_and_subs(names)
+
+
 def _registry_path():
     """PATH as currently saved in the registry (Machine + User), so tools
     installed after this helper (or its console) started are still found."""
@@ -295,8 +300,7 @@ def run_autosync(job, folder):
             _alog(job, "err", "ffmpeg was not found. Run:  winget install Gyan.FFmpeg   then try again.")
             return
 
-        names = [n for n in os.listdir(folder) if os.path.isfile(os.path.join(folder, n))]
-        pairs, problems = pair_videos_and_subs(names)
+        pairs, problems = scan_folder(folder)
         _set(job, total=len(pairs), skipped=len(problems))
         _alog(job, "cyan", f"Folder: {folder}")
         _alog(job, "info", f"Found {len(pairs)} episode(s) to sync" + (f", {len(problems)} skipped" if problems else ""))
@@ -448,7 +452,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         _touch()
-        if self.path not in ("/move", "/autosync", "/autosync/cancel"):
+        if self.path not in ("/move", "/autosync", "/autosync/scan", "/autosync/cancel"):
             self._send_json(404, {"ok": False, "error": "not found"})
             return
         try:
@@ -458,10 +462,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"ok": False, "error": "malformed request body"})
             return
 
-        if self.path == "/autosync":
+        if self.path in ("/autosync", "/autosync/scan"):
             folder = str(data.get("folder", "")).strip().strip('"')
             if not folder or not os.path.isdir(folder):
                 self._send_json(404, {"ok": False, "error": f"folder not found: {folder}"})
+                return
+            if self.path == "/autosync/scan":
+                try:
+                    pairs, problems = scan_folder(folder)
+                except OSError as e:
+                    self._send_json(500, {"ok": False, "error": str(e)})
+                    return
+                self._send_json(200, {
+                    "ok": True,
+                    "pairs": [{"video": v, "srt": s} for v, s in pairs],
+                    "skipped": [{"video": v, "reason": r} for v, r in problems],
+                })
                 return
             job_id, err = start_autosync(folder)
             if err:

@@ -182,6 +182,7 @@
   td.poster-cell{ padding:9px 18px 9px 0; }
   td.arrow{ color:var(--blue); padding:9px 4px; text-align:center; word-break:normal; }
   td.new{ color:var(--green); }
+  td.skip{ color:var(--warn); }
   .row-thumb{
     width:84px; height:124px; border-radius:6px; object-fit:cover; display:block;
     box-shadow:0 3px 8px #00000055; background:var(--field); border:1px solid var(--line);
