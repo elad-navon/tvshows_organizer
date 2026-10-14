@@ -498,7 +498,7 @@ els.themeToggle.addEventListener("click", () => {
   try { localStorage.setItem("uiTheme", next); } catch (e) {}
 });
 
-const TABS = ["organize", "translate", "sync"];
+const TABS = ["organize", "translate", "sync", "autosync"];
 function setActiveTab(name){
   const tab = TABS.includes(name) ? name : "organize";
   for (const btn of document.querySelectorAll(".tab-btn")){

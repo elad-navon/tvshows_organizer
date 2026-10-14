@@ -36,6 +36,7 @@
     <button class="tab-btn active" id="tabOrganizeBtn" type="button" role="tab" aria-selected="true" aria-controls="organizeView" data-tab="organize">Organize files</button>
     <button class="tab-btn" id="tabTranslateBtn" type="button" role="tab" aria-selected="false" aria-controls="translateView" data-tab="translate">Translate subtitles</button>
     <button class="tab-btn" id="tabSyncBtn" type="button" role="tab" aria-selected="false" aria-controls="syncView" data-tab="sync">Shift subtitle timing</button>
+    <button class="tab-btn" id="tabAutosyncBtn" type="button" role="tab" aria-selected="false" aria-controls="autosyncView" data-tab="autosync">Auto Sync</button>
   </div>
 
   <div id="organizeView" role="tabpanel" aria-labelledby="tabOrganizeBtn">
@@ -233,6 +234,60 @@
     </div>
   </div>
 
+  <div id="autosyncView" role="tabpanel" aria-labelledby="tabAutosyncBtn" hidden>
+    <div class="panel">
+      <h2><span class="step">1</span> Folder <span class="rule"></span></h2>
+      <div class="actions">
+        <label for="asFolderInput">Folder path:</label>
+        <input type="text" class="key-input" id="asFolderInput" placeholder="e.g. C:\Elad\TV" autocomplete="off" spellcheck="false" style="width:360px;">
+        <span class="status-row" style="margin-bottom:0;"><span class="dot" id="asHelperDot"></span><span class="status-text" id="asHelperStatus">—</span></span>
+      </div>
+      <div class="status-text" style="display:block; margin-top:8px;">Every video in this folder (not its subfolders) is matched to its .srt, and the subtitle is aligned to the episode's audio. The synced subtitle replaces the original; the original is kept in an <b>_original_subs</b> subfolder.</div>
+      <div class="status-text" style="display:block; margin-top:4px;">Needs <b>start_helper.bat</b> running, plus <b>ffsubsync</b> (<code>pip install ffsubsync</code>) and <b>ffmpeg</b> (<code>winget install Gyan.FFmpeg</code>).</div>
+    </div>
+
+    <div class="panel">
+      <h2><span class="step">2</span> Sync <span class="rule"></span></h2>
+      <div class="actions">
+        <button class="execute" id="asRunBtn" type="button"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/></svg><span>Run sync</span></button>
+        <button class="ghost small" id="asStopBtn" type="button" disabled>Stop</button>
+        <span class="status-text">Usually 10–60 seconds per episode.</span>
+      </div>
+      <div class="banner err" id="asErrBanner"></div>
+
+      <div class="stat-row cols4">
+        <div class="stat-tile exec">
+          <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></div>
+          <div><div class="stat-value" id="asStatPending">0</div><div class="stat-label">Pending</div></div>
+        </div>
+        <div class="stat-tile exec">
+          <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+          <div><div class="stat-value" id="asStatSynced">0</div><div class="stat-label">Synced</div></div>
+        </div>
+        <div class="stat-tile exec">
+          <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/></svg></div>
+          <div><div class="stat-value" id="asStatFailed">0</div><div class="stat-label">Failed</div></div>
+        </div>
+        <div class="stat-tile exec">
+          <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l4 2"/></svg></div>
+          <div><div class="stat-value" id="asStatTime">–</div><div class="stat-label">Exec time</div></div>
+        </div>
+      </div>
+
+      <div class="log-head" style="margin-top:16px;">
+        <h2 style="margin:0;">Activity Log</h2>
+        <button class="ghost small" id="asClearLogBtn" type="button"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6"/></svg><span>Clear log</span></button>
+      </div>
+      <div class="log-box">
+        <div class="log-empty" id="asLogEmpty">
+          <div class="hint-title">No activity yet</div>
+          Enter a folder path and press Run sync
+        </div>
+        <div class="log-lines" id="asLog" style="display:none;"></div>
+      </div>
+    </div>
+  </div>
+
   <footer>TV Organizer <span>·</span> Browser version</footer>
 
 </div>
@@ -241,5 +296,6 @@
 <script src="translate.js"></script>
 <script src="sync.js"></script>
 <script src="app.js"></script>
+<script src="autosync.js"></script>
 </body>
 </html>
