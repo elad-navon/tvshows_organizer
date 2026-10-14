@@ -190,9 +190,12 @@ def pair_videos_and_subs(names):
     return pairs, [(v, problems[v]) for v in videos if v in problems]
 
 
+def list_folder(folder):
+    return [n for n in os.listdir(folder) if os.path.isfile(os.path.join(folder, n))]
+
+
 def scan_folder(folder):
-    names = [n for n in os.listdir(folder) if os.path.isfile(os.path.join(folder, n))]
-    return pair_videos_and_subs(names)
+    return pair_videos_and_subs(list_folder(folder))
 
 
 def _registry_path():
@@ -469,12 +472,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/autosync/scan":
                 try:
-                    pairs, problems = scan_folder(folder)
+                    names = list_folder(folder)
                 except OSError as e:
                     self._send_json(500, {"ok": False, "error": str(e)})
                     return
+                pairs, problems = pair_videos_and_subs(names)
                 self._send_json(200, {
                     "ok": True,
+                    "videoCount": sum(os.path.splitext(n)[1].lower() in VIDEO_EXT for n in names),
+                    "subtitleCount": sum(n.lower().endswith(".srt") for n in names),
                     "pairs": [{"video": v, "srt": s} for v, s in pairs],
                     "skipped": [{"video": v, "reason": r} for v, r in problems],
                 })

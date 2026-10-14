@@ -13,7 +13,7 @@
     view: $("autosyncView"), folder: $("asFolderInput"),
     helperDot: $("asHelperDot"), helperStatus: $("asHelperStatus"),
     scanBtn: $("asScanBtn"), scanErr: $("asScanErrBanner"), scanResults: $("asScanResults"),
-    found: $("asStatFound"), skipped: $("asStatSkipped"), scanTime: $("asStatScanTime"),
+    found: $("asStatFound"), foundLabel: $("asStatFoundLabel"), skipped: $("asStatSkipped"), scanTime: $("asStatScanTime"),
     runBtn: $("asRunBtn"), stopBtn: $("asStopBtn"), err: $("asErrBanner"),
     pending: $("asStatPending"), synced: $("asStatSynced"), failed: $("asStatFailed"), time: $("asStatTime"),
     log: $("asLog"), logEmpty: $("asLogEmpty"), clearLogBtn: $("asClearLogBtn"),
@@ -80,13 +80,15 @@
     a.failed.textContent = d.failed;
   }
   function resetScanStats(){
-    a.found.textContent = "0"; a.skipped.textContent = "0"; a.scanTime.textContent = "0s";
+    a.found.textContent = "0"; a.foundLabel.textContent = "Files found";
+    a.skipped.textContent = "0"; a.scanTime.textContent = "0s";
   }
 
   // -------------------------------------------------------------- Scan
   function renderScan(){
-    const { pairs, skipped } = scanned;
-    a.found.textContent = String(pairs.length);
+    const { pairs, skipped, videoCount, subtitleCount } = scanned;
+    a.found.textContent = String(videoCount + subtitleCount);
+    a.foundLabel.textContent = `Files found (${videoCount} video, ${subtitleCount} subtitle)`;
     a.skipped.textContent = String(skipped.length);
     if (!pairs.length && !skipped.length){
       a.scanResults.innerHTML = `<div class="empty-hint">No video files found in this folder.</div>`;
@@ -131,7 +133,7 @@
         throw new Error("the running helper is an older version — close its window and run start_helper.bat again");
       }
       if (!res.ok || !d.ok) throw new Error(d.error || `HTTP ${res.status}`);
-      scanned = { folder, pairs: d.pairs, skipped: d.skipped };
+      scanned = { folder, pairs: d.pairs, skipped: d.skipped, videoCount: d.videoCount, subtitleCount: d.subtitleCount };
       a.scanTime.textContent = formatDuration((performance.now() - t0) / 1000);
       renderScan();
       // Same as Organize: a fresh scan starts a fresh run.
