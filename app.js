@@ -345,15 +345,28 @@ async function moveFile(srcDirHandle, srcName, destDirHandle, destName, onProgre
 // unless the user opts in and configures real filesystem paths, since the
 // browser has no way to learn the real path behind a picked folder handle.
 // ---------------------------------------------------------------------------
-const HELPER_BASE = "http://127.0.0.1:8765";
+// Port must match PORT in helper.py.
+const HELPER_PORT = 47821;
+const HELPER_BASE = `http://127.0.0.1:${HELPER_PORT}`;
+// Returns "ok" (our helper answered), "foreign" (something else is on the
+// port) or "down" (nothing answered). A foreign server sends no CORS headers,
+// so the normal request fails exactly like "nothing there" — a second,
+// no-cors probe tells the two apart: it succeeds if anything answers at all.
 async function pingHelper(){
   try{
-    const res = await fetch(`${HELPER_BASE}/ping`, { signal: AbortSignal.timeout(1000) });
-    if (!res.ok) return false;
-    const data = await res.json();
-    return !!data.ok;
-  } catch(e){ return false; }
+    const res = await fetch(`${HELPER_BASE}/ping`, { signal: AbortSignal.timeout(1000), cache: "no-store" });
+    const data = await res.json().catch(() => null);
+    return (res.ok && data && data.ok && data.app === "tv-organizer-helper") ? "ok" : "foreign";
+  } catch(e){
+    try{
+      await fetch(`${HELPER_BASE}/ping`, { mode: "no-cors", signal: AbortSignal.timeout(1000), cache: "no-store" });
+      return "foreign";
+    } catch(e2){ return "down"; }
+  }
 }
+const helperProblemText = state => state === "foreign"
+  ? `Another program is using port ${HELPER_PORT} — close it, then run start_helper.bat again`
+  : "Helper not reachable — start start_helper.bat";
 function joinPath(...parts){
   return parts.map(p => String(p).replace(/[\\/]+$/, "")).join("\\");
 }
@@ -641,9 +654,9 @@ async function refreshHelperUI(){
   els.helperHint.style.display = enabled ? "block" : "none";
   els.helperStatusRow.style.display = enabled ? "flex" : "none";
   if (!enabled) return;
-  const ok = await pingHelper();
-  els.helperDot.className = ok ? "dot ok" : "dot warn";
-  els.helperStatus.textContent = ok ? "Helper connected" : "Helper not reachable — start start_helper.bat";
+  const state = await pingHelper();
+  els.helperDot.className = state === "ok" ? "dot ok" : "dot warn";
+  els.helperStatus.textContent = state === "ok" ? "Helper connected" : helperProblemText(state);
 }
 // The helper shuts itself down after a stretch with no requests, so while
 // the page is open with the helper enabled, keep pinging it (this also keeps
@@ -888,8 +901,9 @@ els.runBtn.addEventListener("click", async () => {
   const helperLibRoot = els.helperLibraryPath.value.trim();
   if (els.helperCheck.checked){
     if (helperSrcRoot && helperLibRoot){
-      useHelper = await pingHelper();
-      if (!useHelper) logLineHTML(`⚠ Local helper enabled but not reachable — using the browser for this run instead.`, "warn");
+      const state = await pingHelper();
+      useHelper = state === "ok";
+      if (!useHelper) logLineHTML(`⚠ ${escapeHtml(helperProblemText(state))} — using the browser for this run instead.`, "warn");
     } else {
       logLineHTML(`⚠ Local helper enabled but the source/library paths aren't set — using the browser for this run instead.`, "warn");
     }

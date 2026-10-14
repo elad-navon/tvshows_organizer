@@ -30,6 +30,8 @@ Stop with:   close this window, Ctrl+C, or just leave it idle — it shuts
 import json
 import os
 import shutil
+import socket
+import sys
 import threading
 import time
 import uuid
@@ -37,7 +39,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 HOST = "127.0.0.1"
-PORT = 8765
+# Must match HELPER_BASE in app.js. Chosen above this machine's Windows
+# dynamic port range (1024-15000) and away from common dev-server ports.
+PORT = 47821
+# Lets the page tell this helper apart from some other program on the port.
+APP_ID = "tv-organizer-helper"
 CHUNK_SIZE = 8 * 1024 * 1024  # 8MB
 IDLE_TIMEOUT_SECONDS = 120  # > a hidden tab's throttled (~1/min) keepalive ping
 
@@ -140,7 +146,7 @@ class Handler(BaseHTTPRequestHandler):
         _touch()
         parsed = urlparse(self.path)
         if parsed.path == "/ping":
-            self._send_json(200, {"ok": True})
+            self._send_json(200, {"ok": True, "app": APP_ID})
             return
         if parsed.path == "/progress":
             job_id = parse_qs(parsed.query).get("job", [""])[0]
@@ -197,8 +203,29 @@ class Handler(BaseHTTPRequestHandler):
         print(f"[helper] {self.address_string()} - {fmt % args}")
 
 
+class HelperServer(ThreadingHTTPServer):
+    # On Windows, SO_REUSEADDR (Python's default for HTTP servers) lets a
+    # second program bind the same port silently, and requests then go to
+    # whichever one Windows picks. Claim the port exclusively instead, so a
+    # conflict fails loudly at startup.
+    allow_reuse_address = not hasattr(socket, "SO_EXCLUSIVEADDRUSE")
+
+    def server_bind(self):
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def main():
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    try:
+        server = HelperServer((HOST, PORT), Handler)
+    except OSError as e:
+        # The OS message can be localized, so it isn't printed (it may not
+        # be encodable on the console's codepage); the error number is enough.
+        code = getattr(e, "winerror", None) or e.errno
+        print(f"Could not start: port {PORT} is already in use by another program (error {code}).")
+        print("Close that program and run start_helper.bat again.")
+        sys.exit(1)
     print(f"TV Organizer helper listening on http://{HOST}:{PORT} (this machine only)")
     print(f"Shuts down automatically after {IDLE_TIMEOUT_SECONDS}s of inactivity, or press Ctrl+C to stop now.")
     threading.Thread(target=_idle_watchdog, args=(server,), daemon=True).start()
