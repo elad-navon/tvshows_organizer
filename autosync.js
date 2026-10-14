@@ -126,6 +126,10 @@
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ folder }),
       });
       const d = await res.json().catch(() => ({}));
+      // A route-level 404 means the running helper predates this endpoint.
+      if (res.status === 404 && d.error === "not found"){
+        throw new Error("the running helper is an older version — close its window and run start_helper.bat again");
+      }
       if (!res.ok || !d.ok) throw new Error(d.error || `HTTP ${res.status}`);
       scanned = { folder, pairs: d.pairs, skipped: d.skipped };
       a.scanTime.textContent = formatDuration((performance.now() - t0) / 1000);
