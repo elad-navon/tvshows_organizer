@@ -152,7 +152,11 @@ function looksLikeMatch(query, candidateName){
   // while still allowing the candidate to have extra words the query didn't
   // ("The", a subtitle, etc.) — normal, and shouldn't be rejected. Numeric
   // tokens (years) are ignored; those are handled separately via expectedYear.
-  const words = s => new Set((s.toLowerCase().match(/[a-z0-9]+/g) || []).filter(w => !/^\d+$/.test(w)));
+  // Release names can't carry "&" or apostrophes, so "Georgie & Mandy's" shows
+  // up as "Georgie And Mandys": treat "&" as "and" and drop apostrophes on both
+  // sides before comparing.
+  const words = s => new Set((s.toLowerCase().replace(/&/g, " and ").replace(/['’]/g, "")
+    .match(/[a-z0-9]+/g) || []).filter(w => !/^\d+$/.test(w)));
   const queryWords = words(query);
   if (!queryWords.size) return true;
   const nameWords = words(candidateName);
@@ -212,6 +216,9 @@ async function getShowId(seriesFolder){
     if (noSuffixNoArt && noSuffixNoArt !== noSuffix) queries.push(noSuffixNoArt);
   }
   queries.push(seriesFolder);
+  // The release name spells a title's "&" as "And"; TMDB's search doesn't
+  // always treat the two as equal, so also search with the "&" put back.
+  if (/\sAnd\s/i.test(seriesFolder)) queries.push(seriesFolder.replace(/\s+And\s+/gi, " & "));
   const stripped = seriesFolder.replace(/^(The|A|An)\s+/i, "").trim();
   if (stripped && stripped !== seriesFolder) queries.push(stripped);
   const words = seriesFolder.split(" ");
