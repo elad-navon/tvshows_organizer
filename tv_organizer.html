@@ -242,7 +242,7 @@
         <input type="text" class="key-input" id="asFolderInput" placeholder="e.g. C:\Elad\TV" autocomplete="off" spellcheck="false" style="width:360px;">
         <span class="status-row" style="margin-bottom:0;"><span class="dot" id="asHelperDot"></span><span class="status-text" id="asHelperStatus">—</span></span>
       </div>
-      <div class="status-text" style="display:block; margin-top:8px;">Every video in this folder (not its subfolders) is matched to its .srt, and the subtitle is aligned to the episode's audio. The synced subtitle replaces the original; the original is kept in an <b>_original_subs</b> subfolder.</div>
+      <div class="status-text" style="display:block; margin-top:8px;">Every video in this folder (not its subfolders) is matched to its .srt, and the subtitle is aligned to the episode — to its embedded English subtitles or English audio when it has them (a dubbed audio track misleads the alignment), otherwise to its audio. The offset may change along the episode, e.g. at ad breaks. The synced subtitle replaces the original; the original is kept in an <b>_original_subs</b> subfolder.</div>
       <div class="status-text" style="display:block; margin-top:4px;">Needs <b>start_helper.bat</b> running, plus <b>ffsubsync</b> (<code>pip install ffsubsync</code>) and <b>ffmpeg</b> (<code>winget install Gyan.FFmpeg</code>).</div>
     </div>
 

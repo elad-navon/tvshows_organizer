@@ -35,6 +35,7 @@ Stop with:   close this window, Ctrl+C, or just leave it idle — it shuts
              requests from the page (a poll during an active move counts
              as activity, so this never fires mid-transfer).
 """
+import hashlib
 import importlib.util
 import json
 import os
@@ -245,17 +246,80 @@ def _set(job, **fields):
         job.update(fields)
 
 
-def _sync_one(job, folder, video, srt, env, cmd):
-    """Returns (offset, scale) on success; raises RuntimeError otherwise.
-    The original SRT is only touched after ffsubsync produced a result."""
+TEXT_SUB_CODECS = {"subrip", "ass", "ssa", "mov_text", "webvtt", "text"}
+
+
+def choose_reference(streams):
+    """Picks what to align against, from ffprobe's stream list. Returns
+    (--reference-stream value or None for ffsubsync's default, description).
+    An embedded English text subtitle is the most precise reference; the
+    English audio comes next — a dubbed track (often the default in
+    foreign releases) has different pauses and misleads the alignment."""
+    subs = [s for s in streams if s.get("codec_type") == "subtitle"]
+    audios = [s for s in streams if s.get("codec_type") == "audio"]
+    lang = lambda s: (s.get("tags") or {}).get("language", "").lower()
+    for i, s in enumerate(subs):
+        forced = (s.get("disposition") or {}).get("forced") or "forced" in (s.get("tags") or {}).get("title", "").lower()
+        if s.get("codec_name") in TEXT_SUB_CODECS and lang(s) in ("eng", "en") and not forced:
+            return f"s:{i}", "the embedded English subtitles"
+    for i, s in enumerate(audios):
+        if lang(s) in ("eng", "en"):
+            return f"a:{i}", "the English audio"
+    return None, "the audio"
+
+
+def _pick_reference(video_path, env):
+    ffprobe = shutil.which("ffprobe", path=env["PATH"])
+    if not ffprobe:
+        return choose_reference([])
+    try:
+        out = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries",
+             "stream=codec_type,codec_name:stream_tags=language,title:stream_disposition=forced",
+             "-of", "json", video_path],
+            capture_output=True, env=env, timeout=60,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        streams = json.loads(out.stdout or b"{}").get("streams", [])
+    except (OSError, subprocess.SubprocessError, ValueError):
+        streams = []
+    return choose_reference(streams)
+
+
+def _file_digest(path):
+    with open(path, "rb") as f:
+        return hashlib.sha1(f.read()).hexdigest()
+
+
+def _sync_one(job, folder, video, srt, env, cmd, reference):
+    """Returns (offset, scale, segments) on success; raises RuntimeError
+    otherwise. The original SRT is only touched after ffsubsync produced a
+    result."""
     video_path = os.path.join(folder, video)
     srt_path = os.path.join(folder, srt)
+    backup_dir = os.path.join(folder, BACKUP_DIR_NAME)
+    backup_path = os.path.join(backup_dir, srt)
+    # Remembers what the last run wrote, so a re-run can tell its own output
+    # (start again from the original) from a newly downloaded subtitle.
+    marker_path = backup_path + ".synced-sha1"
+    source_path = srt_path
+    if os.path.isfile(backup_path) and os.path.isfile(marker_path):
+        with open(marker_path, encoding="ascii") as f:
+            if f.read().strip() == _file_digest(srt_path):
+                source_path = backup_path
     tmp_dir = tempfile.mkdtemp(prefix="tvorg-autosync-")
     try:
         out_path = os.path.join(tmp_dir, "out.srt")
+        # --split-penalty lets the offset change along the episode (a
+        # subtitle made for a cut with different ad breaks or scenes drifts
+        # by a few seconds at each one); a single global offset can't fix that.
+        args = [video_path, "-i", source_path, "-o", out_path, "--output-encoding", "utf-8"]
+        if reference:
+            args += ["--reference-stream", reference]
         # cwd is this script's folder, never the (downloaded) media folder.
         proc = subprocess.Popen(
-            cmd + [video_path, "-i", srt_path, "-o", out_path, "--output-encoding", "utf-8"],
+            cmd + args + ["--split-penalty"],
             cwd=os.path.dirname(os.path.abspath(__file__)), env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -273,20 +337,24 @@ def _sync_one(job, folder, video, srt, env, cmd):
         scale = re.search(r"framerate scale factor:\s*([\d.]+)", output)
         offset = float(offset.group(1)) if offset else None
         scale = float(scale.group(1)) if scale else None
+        segments = re.search(r"split alignment:\s*(\d+) segment", output)
+        segments = int(segments.group(1)) if segments else 1
 
         with open(out_path, "r", encoding="utf-8-sig") as f:
             text = f.read()
-        # Keep the very first original: a re-run must not overwrite it.
-        backup_dir = os.path.join(folder, BACKUP_DIR_NAME)
+        # Keep the original: a re-run of our own output must not overwrite
+        # it, but a newly downloaded subtitle becomes the new original. A
+        # backup without a marker comes from an older helper — never replaced.
         os.makedirs(backup_dir, exist_ok=True)
-        backup_path = os.path.join(backup_dir, srt)
-        if not os.path.exists(backup_path):
+        if source_path == srt_path and (os.path.isfile(marker_path) or not os.path.exists(backup_path)):
             shutil.copy2(srt_path, backup_path)
         staged = srt_path + ".autosync.tmp"
         with open(staged, "w", encoding="utf-8-sig", newline="") as f:
             f.write(text)
         os.replace(staged, srt_path)
-        return offset, scale
+        with open(marker_path, "w", encoding="ascii") as f:
+            f.write(_file_digest(srt_path))
+        return offset, scale, segments
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -317,10 +385,11 @@ def run_autosync(job, folder):
             if job["cancel"]:
                 break
             _alog(job, "cyan", f"[{i}/{len(pairs)}] {video}")
-            _alog(job, "dim", f"   subtitle: {srt} — listening to the audio…")
+            reference, ref_text = _pick_reference(os.path.join(folder, video), env)
+            _alog(job, "dim", f"   subtitle: {srt} — aligning to {ref_text}…")
             ep_start = time.monotonic()
             try:
-                offset, scale = _sync_one(job, folder, video, srt, env, cmd)
+                offset, scale, segments = _sync_one(job, folder, video, srt, env, cmd, reference)
             except (RuntimeError, OSError) as e:
                 if job["cancel"]:
                     _alog(job, "warn", "   ⚠ Stopped — this subtitle was left unchanged")
@@ -335,7 +404,8 @@ def run_autosync(job, folder):
             results.append((video, offset, scale))
             off_txt = "unknown" if offset is None else f"{offset:+.3f}s"
             scale_txt = "unknown" if scale is None else f"{scale:.3f}"
-            _alog(job, "ok", f"   ✓ Synced — offset {off_txt}, framerate ×{scale_txt} ({elapsed:.0f}s)")
+            parts_txt = "" if segments == 1 else f", {segments} sections with different offsets"
+            _alog(job, "ok", f"   ✓ Synced — offset {off_txt}, framerate ×{scale_txt}{parts_txt} ({elapsed:.0f}s)")
 
         offsets = [o for _, o, _ in results if o is not None]
         median = statistics.median(offsets) if len(offsets) >= 3 else None

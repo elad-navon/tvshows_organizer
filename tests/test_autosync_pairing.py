@@ -5,7 +5,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from helper import episode_tag, pair_videos_and_subs  # noqa: E402
+from helper import choose_reference, episode_tag, pair_videos_and_subs  # noqa: E402
 
 
 class EpisodeTagTest(unittest.TestCase):
@@ -64,6 +64,30 @@ class PairingTest(unittest.TestCase):
         pairs, problems = pair_videos_and_subs(["notes.txt", "A.S01E01.nfo", "A.S01E01.srt", "_original_subs"])
         self.assertEqual(pairs, [])
         self.assertEqual(problems, [])
+
+
+def _stream(kind, codec, lang=None, title=None, forced=0):
+    tags = {k: v for k, v in (("language", lang), ("title", title)) if v}
+    return {"codec_type": kind, "codec_name": codec, "tags": tags, "disposition": {"forced": forced}}
+
+
+class ReferenceTest(unittest.TestCase):
+    def test_english_text_subtitle_wins(self):
+        streams = [_stream("video", "hevc"), _stream("audio", "ac3", "ita"), _stream("audio", "ac3", "eng"),
+                   _stream("subtitle", "subrip", "ita"), _stream("subtitle", "subrip", "eng")]
+        self.assertEqual(choose_reference(streams)[0], "s:1")
+
+    def test_forced_and_bitmap_subtitles_are_skipped(self):
+        streams = [_stream("audio", "ac3", "ita"), _stream("audio", "ac3", "eng"),
+                   _stream("subtitle", "subrip", "eng", "English Forced"),
+                   _stream("subtitle", "subrip", "eng", forced=1),
+                   _stream("subtitle", "hdmv_pgs_subtitle", "eng")]
+        self.assertEqual(choose_reference(streams)[0], "a:1")
+
+    def test_no_english_falls_back_to_default_audio(self):
+        streams = [_stream("audio", "aac", "ita"), _stream("subtitle", "subrip", "ita")]
+        self.assertIsNone(choose_reference(streams)[0])
+        self.assertIsNone(choose_reference([])[0])
 
 
 if __name__ == "__main__":
