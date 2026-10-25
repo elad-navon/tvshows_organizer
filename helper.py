@@ -886,7 +886,9 @@ class Handler(BaseHTTPRequestHandler):
         if not os.path.isfile(src):
             self._send_json(404, {"ok": False, "error": f"source file not found: {src}"})
             return
-        if os.path.exists(dest):
+        # A rename that only changes letter case finds the file itself on Windows.
+        same_file = os.path.normcase(os.path.abspath(src)) == os.path.normcase(os.path.abspath(dest))
+        if os.path.exists(dest) and not same_file:
             self._send_json(409, {"ok": False, "error": f"destination already exists: {dest}"})
             return
 

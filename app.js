@@ -440,6 +440,8 @@ const els = {
   scanResults: document.getElementById("scanResults"),
   executePanel: document.getElementById("executePanel"),
   runBtn: document.getElementById("runBtn"),
+  runHint: document.getElementById("runHint"),
+  renameOnlyCheck: document.getElementById("renameOnlyCheck"),
   log: document.getElementById("log"),
   logEmpty: document.getElementById("logEmpty"),
   clearLogBtn: document.getElementById("clearLogBtn"),
@@ -601,9 +603,10 @@ async function refreshFolderUI(){
     els.libDot.className = "dot"; els.libStatus.textContent = "—";
     els.libBtnLabel.textContent = "Choose folder…";
   }
-  els.scanBtn.disabled = !(sourceHandle && libraryHandle
+  // The library is only needed to move files there, not to rename them in place.
+  els.scanBtn.disabled = !(sourceHandle
     && (await sourceHandle.queryPermission({mode:"readwrite"})) === "granted"
-    && (await libraryHandle.queryPermission({mode:"readwrite"})) === "granted");
+    && (!libraryHandle || (await libraryHandle.queryPermission({mode:"readwrite"})) === "granted"));
 }
 
 async function connectFolder(kind){
@@ -770,9 +773,14 @@ async function renderScanResults(){
   for (const s of seriesSet){
     const count = scannedFiles.filter(f => f.seriesFolder === s).length;
     let exists = false;
-    try{ await libraryHandle.getDirectoryHandle(s, {create:false}); exists = true; } catch(e){}
+    if (libraryHandle){
+      try{ await libraryHandle.getDirectoryHandle(s, {create:false}); exists = true; } catch(e){}
+    }
+    const tag = libraryHandle
+      ? `<span class="stag ${exists ? "exists" : "newlib"}">${exists ? "Exists in library" : "New"}</span>`
+      : "";
     seriesRows.push(`<li><span class="sinfo"><span class="sname">${escapeHtml(s)}</span><span class="scount">${count} ${plural(count, "file")}</span></span>
-      <span class="stag ${exists ? "exists" : "newlib"}">${exists ? "Exists in library" : "New"}</span></li>`);
+      ${tag}</li>`);
   }
 
   const episodeGroups = new Map(); // seriesFolder::episodeTag -> files[]
@@ -878,10 +886,30 @@ els.scanResults.addEventListener("click", (e) => {
 // ---------------------------------------------------------------------------
 // Execute
 // ---------------------------------------------------------------------------
+// "Rename only" gives each file its new name where it is, without moving it
+// to the library. Deliberately not remembered: every visit starts with the
+// default, moving.
+const runLabel = els.runBtn.querySelector("span");
+els.renameOnlyCheck.addEventListener("change", () => {
+  const renameOnly = els.renameOnlyCheck.checked;
+  runLabel.textContent = renameOnly ? "Rename" : "Rename & move";
+  els.runHint.textContent = renameOnly
+    ? "Files will only be renamed — they stay in the source folder."
+    : "Files will be moved (not copied) — the source will not remain.";
+});
+
 els.runBtn.addEventListener("click", async () => {
   const toProcess = selectedFiles();
   if (!toProcess.length) return;
-  if (!confirm(`Move and rename ${toProcess.length} ${plural(toProcess.length, "file")}? This will move the original ${plural(toProcess.length, "file")} (not copy ${toProcess.length === 1 ? "it" : "them"}).`)) return;
+  const renameOnly = els.renameOnlyCheck.checked;
+  if (!renameOnly && !libraryHandle){
+    alert("Choose the library folder first (step 1), or tick \"Rename only\" to rename the files where they are.");
+    return;
+  }
+  const question = renameOnly
+    ? `Rename ${toProcess.length} ${plural(toProcess.length, "file")}? ${toProcess.length === 1 ? "It stays" : "They stay"} in the source folder.`
+    : `Move and rename ${toProcess.length} ${plural(toProcess.length, "file")}? This will move the original ${plural(toProcess.length, "file")} (not copy ${toProcess.length === 1 ? "it" : "them"}).`;
+  if (!confirm(question)) return;
 
   els.runBtn.disabled = true;
   els.log.innerHTML = ""; els.log.style.display = "none"; els.logEmpty.style.display = "block";
@@ -903,11 +931,48 @@ els.runBtn.addEventListener("click", async () => {
     els.statPending.textContent = String(total - success - errors.length);
   };
 
+  async function renameInPlace(f){
+    try{
+      if (f.newName === f.originalName){
+        logLineHTML(`✓ Already named, nothing to do: ${breakable(f.originalName)}`, "dim");
+        success += 1;
+        updateExecStats();
+        return;
+      }
+      // On Windows a change of letter case alone finds the file itself.
+      if (f.newName.toLowerCase() !== f.originalName.toLowerCase()){
+        let destExists = false;
+        try{ await sourceHandle.getFileHandle(f.newName, {create:false}); destExists = true; } catch(e){}
+        if (destExists){
+          logLineHTML(`⚠ A file with the new name is already in the folder, skipped: ${breakable(f.newName)}`, "warn");
+          errors.push(f.originalName);
+          updateExecStats();
+          return;
+        }
+      }
+      logLineHTML(`${VIDEO_EXT.has(f.ext) ? "🎬" : "📄"} ${breakable(f.originalName)} → ${breakable(f.newName)}`, "cyan");
+      const pr = progressRow();
+      if (useHelper){
+        await moveFileViaHelper(joinPath(helperSrcRoot, f.originalName), joinPath(helperSrcRoot, f.newName),
+          (copied, total, start, instant) => pr.update(copied, total, start, instant));
+      } else {
+        await moveFile(sourceHandle, f.originalName, sourceHandle, f.newName,
+          (copied, total, start, instant) => pr.update(copied, total, start, instant));
+      }
+      success += 1;
+      updateExecStats();
+    } catch(e){
+      logLineHTML(`✗ Error renaming ${breakable(f.originalName)}: ${escapeHtml(String(e.message || e))}`, "err");
+      errors.push(f.originalName);
+      updateExecStats();
+    }
+  }
+
   let useHelper = false;
   const helperSrcRoot = els.helperSourcePath.value.trim();
   const helperLibRoot = els.helperLibraryPath.value.trim();
   if (els.helperCheck.checked){
-    if (helperSrcRoot && helperLibRoot){
+    if (helperSrcRoot && (helperLibRoot || renameOnly)){
       const state = await pingHelper();
       useHelper = state === "ok";
       if (!useHelper) logLineHTML(`⚠ ${escapeHtml(helperProblemText(state))} — using the browser for this run instead.`, "warn");
@@ -917,6 +982,10 @@ els.runBtn.addEventListener("click", async () => {
   }
 
   for (const f of toProcess){
+    if (renameOnly){
+      await renameInPlace(f);
+      continue;
+    }
     try{
       // Resolve straight to the final library destination — no local staging
       // folder, so every file's bytes are read and written exactly once.
