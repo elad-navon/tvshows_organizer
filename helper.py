@@ -246,6 +246,197 @@ def _set(job, **fields):
         job.update(fields)
 
 
+SRT_TIMING_RE = re.compile(r"^\s*(\d+):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d+):(\d{2}):(\d{2})[,.](\d{3})(.*)$")
+MIN_CUE_MS = 800  # an overlap is fixed by shortening the earlier cue only down to this
+CUE_GAP_MS = 40
+
+
+def decode_srt(raw):
+    """Hebrew SRTs are often Windows-1255 rather than UTF-8."""
+    for encoding in ("utf-8-sig", "cp1255"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            pass
+    return raw.decode("latin-1")
+
+
+def parse_srt(text):
+    """[{start, end, rest, text}] in ms, or None if any block can't be read
+    (then the file is left exactly as ffsubsync wrote it)."""
+    cues = []
+    for block in re.split(r"\r?\n[ \t]*\r?\n", text.strip()):
+        lines = block.splitlines()
+        timing = next((i for i, l in enumerate(lines[:2]) if SRT_TIMING_RE.match(l)), None)
+        if timing is None:
+            return None
+        g = SRT_TIMING_RE.match(lines[timing]).groups()
+        ms = lambda h, m, s, f: ((int(h) * 60 + int(m)) * 60 + int(s)) * 1000 + int(f)
+        cues.append({"start": ms(*g[0:4]), "end": ms(*g[4:8]), "rest": g[8].rstrip(),
+                     "text": "\n".join(l.strip() for l in lines[timing + 1:])})
+    return cues
+
+
+def format_srt(cues):
+    def ts(ms):
+        ms = max(0, ms)
+        return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
+    text = "\n".join(f"{i}\n{ts(c['start'])} --> {ts(c['end'])}{c['rest']}\n{c['text']}\n"
+                     for i, c in enumerate(cues, 1))
+    return text.replace("\n", "\r\n")
+
+
+def tidy_synced_cues(source, synced):
+    """ffsubsync sorts its output by start time, so where the offset jumps
+    between two sections by more than the gap between two cues, they swap
+    places and overlap. Puts the cues back in the source's order (matched
+    by text), then removes every overlap: the two cues move apart into the
+    free time after the later one and before the earlier one, keeping their
+    length; only when that isn't enough is the earlier cue shortened (while
+    it stays readable) and the later one pushed after what's left.
+    Before that, a misplaced "island" section is put back (see
+    _fix_offset_islands). Returns (cues, overlaps fixed, islands fixed)."""
+    unused = {}
+    for i, c in enumerate(source):
+        unused.setdefault(c["text"], []).append(i)
+    order = []
+    for c in synced:
+        if not unused.get(c["text"]):
+            order = None  # text changed somewhere; keep ffsubsync's order
+            break
+        order.append(unused[c["text"]].pop(0))
+    islands = 0
+    if order:
+        pairs = sorted(zip(order, synced), key=lambda p: p[0])
+        cues = [dict(c) for _, c in pairs]
+        shifts = [c["start"] - source[i]["start"] for i, c in pairs]
+        islands = _fix_offset_islands(cues, shifts)
+        _snap_section_bounds(source, [i for i, _ in pairs], cues, shifts)
+    else:
+        cues = [dict(c) for c in synced]
+
+    fixed = 0
+    for i in range(len(cues) - 1):
+        prev, cur = cues[i], cues[i + 1]
+        if cur["start"] >= prev["end"]:
+            continue
+        fixed += 1
+        needed = prev["end"] + CUE_GAP_MS - cur["start"]
+        room_after = cues[i + 2]["start"] - CUE_GAP_MS - cur["end"] if i + 2 < len(cues) else needed
+        room_before = prev["start"] - (cues[i - 1]["end"] + CUE_GAP_MS if i > 0 else 0)
+        later = max(0, min(needed, room_after))
+        earlier = max(0, min(needed - later, room_before))
+        if later + earlier >= needed:
+            # Both keep their full length: the later cue moves into the free
+            # time after it, the earlier one into the free time before it.
+            cur["start"] += later
+            cur["end"] += later
+            prev["start"] -= earlier
+            prev["end"] -= earlier
+            continue
+        prev["end"] = min(prev["end"], max(prev["start"] + MIN_CUE_MS, cur["start"] - CUE_GAP_MS))
+        if cur["start"] < prev["end"] + CUE_GAP_MS:
+            shift = prev["end"] + CUE_GAP_MS - cur["start"]
+            cur["start"] += shift
+            cur["end"] += shift
+    return cues, fixed, islands
+
+
+ISLAND_JUMP_MS = 5000
+ISLAND_CONTEXT = 10  # cues on each side an island is compared with
+
+
+def _fix_offset_islands(cues, shifts):
+    """Split alignment sometimes gives a stretch of cues an offset far from
+    both its neighbours (e.g. two minutes moved 55s back while the sections
+    around it are within a second or two of each other). A real cut changes
+    the offset for good; an offset that jumps away and comes back is a
+    misdetection, which drops those lines into another scene. Such an
+    island gets the offset of the cues just before it. `cues` (in source
+    order) and `shifts` (each cue's synced minus original start) are
+    updated in place. Returns the number of islands fixed."""
+    def median(values):
+        return sorted(values)[len(values) // 2]
+
+    blocks = []  # [first, last] cue indices of runs with no jump > ISLAND_JUMP_MS
+    for i in range(len(shifts)):
+        if blocks and abs(shifts[i] - shifts[i - 1]) <= ISLAND_JUMP_MS:
+            blocks[-1][1] = i
+        else:
+            blocks.append([i, i])
+    fixed = 0
+    for k in range(1, len(blocks) - 1):
+        first, last = blocks[k]
+        # The cues right next to the island — a whole neighbouring block
+        # can span several legitimate offset changes.
+        prev = median(shifts[max(blocks[k - 1][0], first - ISLAND_CONTEXT):first])
+        nxt = median(shifts[last + 1:min(blocks[k + 1][1] + 1, last + 1 + ISLAND_CONTEXT)])
+        own = median(shifts[first:last + 1])
+        if (abs(own - prev) > ISLAND_JUMP_MS and abs(own - nxt) > ISLAND_JUMP_MS
+                and abs(prev - nxt) <= ISLAND_JUMP_MS and last - first + 1 < len(cues) // 3):
+            target = shifts[first - 1]
+            for i in range(first, last + 1):
+                delta = target - shifts[i]
+                cues[i]["start"] += delta
+                cues[i]["end"] += delta
+                shifts[i] = target
+            fixed += 1
+    return fixed
+
+
+SECTION_STEP_MS = 1000     # a smoothed offset change bigger than this is a section boundary
+SNAP_WINDOW_MS = 180000    # how far from ffsubsync's boundary the real one is looked for
+BREAK_MARKERS = {"+", "*", "#"}
+
+
+def _snap_section_bounds(source, src_idx, cues, shifts):
+    """ffsubsync finds the offset change at an ad break but often places it
+    a few cues — even minutes — off, so the cues in between get the wrong
+    section's offset. The real boundary is a gap in the source at least as
+    long as the time the cut removed: preferably one holding a break marker
+    (translators often leave a lone "+" cue there, which ffsubsync drops),
+    otherwise the qualifying gap nearest ffsubsync's boundary. `cues` and
+    `shifts` follow source order (src_idx); updated in place. Returns the
+    number of boundaries moved."""
+    def median(values):
+        return sorted(values)[len(values) // 2]
+
+    n = len(cues)
+    smooth = [median(shifts[max(0, j - 5):j + 6]) for j in range(n)]
+    points = []
+    for j in range(1, n):
+        if abs(smooth[j] - smooth[j - 1]) > SECTION_STEP_MS and (not points or j - points[-1] > 5):
+            points.append(j)
+
+    moved = 0
+    for k, cp in enumerate(points):
+        lo = points[k - 1] + 1 if k else 1
+        hi = points[k + 1] - 1 if k + 1 < len(points) else n - 1
+        left = median(shifts[max(lo - 1, cp - 10):cp])
+        right = median(shifts[cp:min(hi + 1, cp + 10)])
+        need = abs(right - left) - 300
+        at = source[src_idx[cp]]["start"]
+        best = None  # (no marker, distance, boundary index)
+        for b in range(lo, hi + 1):
+            before, after = source[src_idx[b - 1]], source[src_idx[b]]
+            if abs(after["start"] - at) > SNAP_WINDOW_MS or after["start"] - before["end"] < need:
+                continue
+            marker = any(source[m]["text"].strip() in BREAK_MARKERS for m in range(src_idx[b - 1] + 1, src_idx[b]))
+            key = (not marker, abs(b - cp), b)
+            best = min(best, key) if best else key
+        if not best or best[2] == cp:
+            continue
+        b = best[2]
+        target, span = (right, range(b, cp)) if b < cp else (left, range(cp, b))
+        for i in span:
+            delta = target - shifts[i]
+            cues[i]["start"] += delta
+            cues[i]["end"] += delta
+            shifts[i] = target
+        moved += 1
+    return moved
+
+
 TEXT_SUB_CODECS = {"subrip", "ass", "ssa", "mov_text", "webvtt", "text"}
 
 
@@ -342,11 +533,25 @@ def _sync_one(job, folder, video, srt, env, cmd, reference):
 
         with open(out_path, "r", encoding="utf-8-sig") as f:
             text = f.read()
+        overlaps = islands = 0
+        synced = parse_srt(text)
+        if synced is not None:
+            with open(source_path, "rb") as f:
+                source = parse_srt(decode_srt(f.read())) or []
+            cues, overlaps, islands = tidy_synced_cues(source, synced)
+            text = format_srt(cues)
         # Keep the original: a re-run of our own output must not overwrite
         # it, but a newly downloaded subtitle becomes the new original. A
         # backup without a marker comes from an older helper — never replaced.
         os.makedirs(backup_dir, exist_ok=True)
         if source_path == srt_path and (os.path.isfile(marker_path) or not os.path.exists(backup_path)):
+            # A backup is never overwritten: if this is wrong about what's
+            # "new", the earlier original must still be there.
+            if os.path.exists(backup_path):
+                n = 1
+                while os.path.exists(f"{backup_path}.{n}"):
+                    n += 1
+                os.replace(backup_path, f"{backup_path}.{n}")
             shutil.copy2(srt_path, backup_path)
         staged = srt_path + ".autosync.tmp"
         with open(staged, "w", encoding="utf-8-sig", newline="") as f:
@@ -354,7 +559,7 @@ def _sync_one(job, folder, video, srt, env, cmd, reference):
         os.replace(staged, srt_path)
         with open(marker_path, "w", encoding="ascii") as f:
             f.write(_file_digest(srt_path))
-        return offset, scale, segments
+        return offset, scale, segments, overlaps, islands
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -389,7 +594,7 @@ def run_autosync(job, folder):
             _alog(job, "dim", f"   subtitle: {srt} — aligning to {ref_text}…")
             ep_start = time.monotonic()
             try:
-                offset, scale, segments = _sync_one(job, folder, video, srt, env, cmd, reference)
+                offset, scale, segments, overlaps, islands = _sync_one(job, folder, video, srt, env, cmd, reference)
             except (RuntimeError, OSError) as e:
                 if job["cancel"]:
                     _alog(job, "warn", "   ⚠ Stopped — this subtitle was left unchanged")
@@ -405,6 +610,10 @@ def run_autosync(job, folder):
             off_txt = "unknown" if offset is None else f"{offset:+.3f}s"
             scale_txt = "unknown" if scale is None else f"{scale:.3f}"
             parts_txt = "" if segments == 1 else f", {segments} sections with different offsets"
+            if islands:
+                parts_txt += f", {islands} misplaced section(s) put back"
+            if overlaps:
+                parts_txt += f", {overlaps} overlapping line(s) fixed"
             _alog(job, "ok", f"   ✓ Synced — offset {off_txt}, framerate ×{scale_txt}{parts_txt} ({elapsed:.0f}s)")
 
         offsets = [o for _, o, _ in results if o is not None]

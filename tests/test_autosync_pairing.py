@@ -5,7 +5,8 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from helper import choose_reference, episode_tag, pair_videos_and_subs  # noqa: E402
+from helper import (choose_reference, decode_srt, episode_tag, format_srt,  # noqa: E402
+                    pair_videos_and_subs, parse_srt, tidy_synced_cues)
 
 
 class EpisodeTagTest(unittest.TestCase):
@@ -88,6 +89,96 @@ class ReferenceTest(unittest.TestCase):
         streams = [_stream("audio", "aac", "ita"), _stream("subtitle", "subrip", "ita")]
         self.assertIsNone(choose_reference(streams)[0])
         self.assertIsNone(choose_reference([])[0])
+
+
+def _cue(start, end, text):
+    return {"start": start, "end": end, "rest": "", "text": text}
+
+
+class TidyCuesTest(unittest.TestCase):
+    def test_swapped_cues_go_back_to_source_order(self):
+        # A section jump moved "B" before "A" (ffsubsync sorts by start).
+        source = [_cue(0, 1000, "A"), _cue(1100, 2000, "B"), _cue(9000, 9500, "C")]
+        synced = [_cue(500, 1500, "B"), _cue(700, 1800, "A"), _cue(9000, 9500, "C")]
+        cues, fixed, _ = tidy_synced_cues(source, synced)
+        self.assertEqual([c["text"] for c in cues], ["A", "B", "C"])
+        self.assertEqual(fixed, 1)
+        # B moves into the free time after it, keeping its length.
+        self.assertEqual((cues[0]["start"], cues[0]["end"]), (700, 1800))
+        self.assertEqual((cues[1]["start"], cues[1]["end"]), (1840, 2840))
+
+    def test_no_room_shortens_earlier_cue_then_pushes(self):
+        source = [_cue(0, 3000, "A"), _cue(2000, 3000, "B"), _cue(3100, 4000, "C")]
+        cues, fixed, _ = tidy_synced_cues(source, [dict(c) for c in source])
+        self.assertEqual(cues[0]["end"], 1960)  # A shortened, still readable
+        self.assertEqual(cues[1]["start"], 2000)
+        for prev, cur in zip(cues, cues[1:]):
+            self.assertGreaterEqual(cur["start"], prev["end"])
+
+    def test_never_shortens_below_minimum(self):
+        source = [_cue(0, 2000, "A"), _cue(100, 1000, "B")]
+        cues, _, _ = tidy_synced_cues(source, [dict(c) for c in source])
+        self.assertEqual(cues[0]["end"], 2000)       # last cue: nothing after B, so B moves
+        self.assertEqual(cues[1]["start"], 2040)
+
+    def test_changed_text_keeps_synced_order(self):
+        cues, fixed, _ = tidy_synced_cues([_cue(0, 1000, "X")], [_cue(0, 1000, "A"), _cue(2000, 3000, "B")])
+        self.assertEqual([c["text"] for c in cues], ["A", "B"])
+        self.assertEqual(fixed, 0)
+
+    def test_island_section_gets_its_neighbours_offset(self):
+        # 30 cues 3s apart; cues 10-14 were moved 55s back, the rest by -1s / -2.5s.
+        source = [_cue(i * 3000, i * 3000 + 2000, f"line {i}") for i in range(30)]
+        shift = lambda i: -55000 if 10 <= i <= 14 else (-1000 if i < 20 else -2500)
+        synced = sorted((_cue(c["start"] + shift(i), c["end"] + shift(i), c["text"]) for i, c in enumerate(source)),
+                        key=lambda c: c["start"])
+        cues, _, islands = tidy_synced_cues(source, synced)
+        self.assertEqual(islands, 1)
+        self.assertEqual([c["text"] for c in cues], [c["text"] for c in source])
+        self.assertEqual(cues[12]["start"], source[12]["start"] - 1000)
+
+    def test_real_cut_is_not_an_island(self):
+        # The offset changes for good at cue 15: a cut, not a misdetection.
+        source = [_cue(i * 3000, i * 3000 + 2000, f"line {i}") for i in range(30)]
+        synced = [_cue(c["start"] - (0 if i < 15 else 20000), c["end"] - (0 if i < 15 else 20000), c["text"])
+                  for i, c in enumerate(source)]
+        _, _, islands = tidy_synced_cues(source, sorted(synced, key=lambda c: c["start"]))
+        self.assertEqual(islands, 0)
+
+    def test_section_boundary_snaps_to_break_marker(self):
+        # A 2s ad-break gap holding a "+" cue after line 19, but ffsubsync
+        # started the -2s section at line 12 instead.
+        source, t = [], 0
+        for i in range(40):
+            if i == 20:
+                source.append(_cue(t, t + 500, "+"))
+                t += 2500
+            source.append(_cue(t, t + 2000, f"line {i}"))
+            t += 2500
+        texts = [c for c in source if c["text"] != "+"]
+        synced = [_cue(c["start"] - (2000 if i >= 12 else 0), c["end"] - (2000 if i >= 12 else 0), c["text"])
+                  for i, c in enumerate(texts)]
+        cues, _, _ = tidy_synced_cues(source, sorted(synced, key=lambda c: c["start"]))
+        by_text = {c["text"]: c for c in cues}
+        orig = {c["text"]: c for c in texts}
+        self.assertEqual(by_text["line 15"]["start"], orig["line 15"]["start"])        # back to the earlier offset
+        self.assertEqual(by_text["line 25"]["start"], orig["line 25"]["start"] - 2000)  # after the break: unchanged
+
+
+class SrtRoundTripTest(unittest.TestCase):
+    def test_parse_and_format(self):
+        text = ("1\r\n00:00:01,066 --> 00:00:02,206\r\nשלום\r\nעולם\r\n\r\n"
+                "2\r\n01:02:03,004 --> 01:02:04,000\r\n+\r\n")
+        cues = parse_srt(text)
+        self.assertEqual(cues[0], {"start": 1066, "end": 2206, "rest": "", "text": "שלום\nעולם"})
+        self.assertEqual(cues[1]["start"], 3723004)
+        self.assertEqual(format_srt(cues), text)
+
+    def test_unreadable_block_means_hands_off(self):
+        self.assertIsNone(parse_srt("1\nnot a timing line\nhello\n"))
+
+    def test_decode_windows_1255(self):
+        self.assertEqual(decode_srt("שלום".encode("cp1255")), "שלום")
 
 
 if __name__ == "__main__":
