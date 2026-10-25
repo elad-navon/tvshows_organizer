@@ -478,6 +478,130 @@ def _pick_reference(video_path, env):
     return choose_reference(streams)
 
 
+MIN_CHUNK_CUES = 8               # fewer lines than this can't be aligned reliably on their own
+CHUNK_MAX_OFFSET_SECONDS = 30   # search range for the first part
+CHUNK_LOCAL_SECONDS = 6         # search range around the previous part's offset
+
+
+def _run_process(job, argv, env):
+    """Runs a tool (stoppable from the page); returns its output, raises
+    RuntimeError if it fails."""
+    # cwd is this script's folder, never the (downloaded) media folder.
+    proc = subprocess.Popen(
+        argv, cwd=os.path.dirname(os.path.abspath(__file__)), env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    _set(job, proc=proc)
+    output = proc.communicate()[0].decode("utf-8", errors="replace")
+    _set(job, proc=None)
+    if job["cancel"]:
+        raise RuntimeError("stopped")
+    if proc.returncode != 0:
+        lines = [l.strip() for l in output.splitlines() if l.strip()]
+        raise RuntimeError(lines[-1] if lines else f"{os.path.basename(argv[0])} exited with code {proc.returncode}")
+    return output
+
+
+def _sync_split(job, cmd, env, video_path, reference, source_path, tmp_dir):
+    """ffsubsync's piecewise alignment over the whole episode. Returns
+    (text, offset, scale, segments)."""
+    out_path = os.path.join(tmp_dir, "out.srt")
+    # --split-penalty lets the offset change along the episode (a subtitle
+    # made for a cut with different ad breaks or scenes drifts by a few
+    # seconds at each one); a single global offset can't fix that.
+    args = [video_path, "-i", source_path, "-o", out_path, "--output-encoding", "utf-8"]
+    if reference:
+        args += ["--reference-stream", reference]
+    output = _run_process(job, cmd + args + ["--split-penalty"], env)
+    if not os.path.isfile(out_path):
+        raise RuntimeError("ffsubsync wrote no output")
+    offset = re.search(r"offset seconds:\s*(-?[\d.]+)", output)
+    scale = re.search(r"framerate scale factor:\s*([\d.]+)", output)
+    segments = re.search(r"split alignment:\s*(\d+) segment", output)
+    with open(out_path, "r", encoding="utf-8-sig") as f:
+        text = f.read()
+    return (text, float(offset.group(1)) if offset else None, float(scale.group(1)) if scale else None,
+            int(segments.group(1)) if segments else 1)
+
+
+def break_chunks(cues):
+    """The source's lines split at the translator's lone ad-break marks
+    (dropped). None unless that gives at least two parts."""
+    chunks, current = [], []
+    for c in cues:
+        if c["text"].strip() in BREAK_MARKERS:
+            if current:
+                chunks.append(current)
+                current = []
+        else:
+            current.append(c)
+    if current:
+        chunks.append(current)
+    return chunks if len(chunks) >= 2 else None
+
+
+def _sync_by_breaks(job, cmd, env, video_path, reference, chunks, tmp_dir):
+    """When the translator marked the ad breaks, they are where the offset
+    changes — more reliable than ffsubsync guessing the boundaries (it
+    misses some and invents others). Each part between two marks is aligned
+    on its own with a single offset. The reference is extracted and analysed
+    once (into tmp_dir, never next to the video), so each part takes about a
+    second. A part too short to align takes the offset of the part before
+    it. Returns (text, offset of the first part, scale)."""
+    stream = reference or "a:0"
+    ffmpeg = shutil.which("ffmpeg", path=env["PATH"])
+    if stream.startswith("s:"):
+        ref_path = os.path.join(tmp_dir, "ref.srt")
+        _run_process(job, [ffmpeg, "-v", "error", "-y", "-i", video_path, "-map", f"0:{stream}", ref_path], env)
+    else:
+        wav_path = os.path.join(tmp_dir, "ref.wav")
+        _run_process(job, [ffmpeg, "-v", "error", "-y", "-i", video_path, "-map", f"0:{stream}",
+                           "-ac", "1", "-ar", "16000", wav_path], env)
+        _run_process(job, cmd + [wav_path, "--serialize-speech"], env)
+        ref_path = os.path.join(tmp_dir, "ref.npz")
+
+    def align(k, chunk, pre_ms, window_s):
+        """Offset (ms) for `chunk` found within window_s of pre_ms, or None."""
+        chunk_in = os.path.join(tmp_dir, f"part{k}.srt")
+        with open(chunk_in, "w", encoding="utf-8", newline="") as f:
+            f.write(format_srt([dict(c, start=c["start"] + pre_ms, end=c["end"] + pre_ms) for c in chunk]))
+        output = _run_process(job, cmd + [ref_path, "-i", chunk_in, "-o", chunk_in + ".out",
+                                          "--output-encoding", "utf-8", "--no-fix-framerate",
+                                          "--max-offset-seconds", str(window_s)], env)
+        m = re.search(r"offset seconds:\s*(-?[\d.]+)", output)
+        return pre_ms + round(float(m.group(1)) * 1000) if m else None
+
+    # A break changes the offset by a few seconds, so after the first part
+    # each one is searched close to the offset before it: a short part
+    # searched widely can lock onto similar speech far away (S01E11: +29s
+    # instead of -5.4s). Only a result at the edge of the close search
+    # (an unusually long cut) falls back to the wide one.
+    offsets, prev = [], None
+    for k, chunk in enumerate(chunks):
+        if len(chunk) < MIN_CHUNK_CUES:
+            offsets.append(None)
+            continue
+        found = None
+        if prev is not None:
+            found = align(k, chunk, prev, CHUNK_LOCAL_SECONDS)
+            if found is not None and abs(found - prev) > (CHUNK_LOCAL_SECONDS - 0.5) * 1000:
+                found = None
+        if found is None:
+            found = align(k, chunk, 0, CHUNK_MAX_OFFSET_SECONDS)
+        offsets.append(found)
+        prev = found if found is not None else prev
+    known = [o for o in offsets if o is not None]
+    if not known:
+        raise RuntimeError("none of the parts between the ad breaks could be aligned")
+
+    cues, current = [], known[0]
+    for chunk, o in zip(chunks, offsets):
+        current = o if o is not None else current
+        cues += [dict(c, start=c["start"] + current, end=c["end"] + current) for c in chunk]
+    return format_srt(cues), known[0] / 1000, 1.0
+
+
 def _file_digest(path):
     with open(path, "rb") as f:
         return hashlib.sha1(f.read()).hexdigest()
@@ -501,44 +625,18 @@ def _sync_one(job, folder, video, srt, env, cmd, reference):
                 source_path = backup_path
     tmp_dir = tempfile.mkdtemp(prefix="tvorg-autosync-")
     try:
-        out_path = os.path.join(tmp_dir, "out.srt")
-        # --split-penalty lets the offset change along the episode (a
-        # subtitle made for a cut with different ad breaks or scenes drifts
-        # by a few seconds at each one); a single global offset can't fix that.
-        args = [video_path, "-i", source_path, "-o", out_path, "--output-encoding", "utf-8"]
-        if reference:
-            args += ["--reference-stream", reference]
-        # cwd is this script's folder, never the (downloaded) media folder.
-        proc = subprocess.Popen(
-            cmd + args + ["--split-penalty"],
-            cwd=os.path.dirname(os.path.abspath(__file__)), env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        _set(job, proc=proc)
-        output = proc.communicate()[0].decode("utf-8", errors="replace")
-        _set(job, proc=None)
-        if job["cancel"]:
-            raise RuntimeError("stopped")
-        if proc.returncode != 0 or not os.path.isfile(out_path):
-            lines = [l.strip() for l in output.splitlines() if l.strip()]
-            raise RuntimeError(lines[-1] if lines else f"ffsubsync exited with code {proc.returncode}")
-
-        offset = re.search(r"offset seconds:\s*(-?[\d.]+)", output)
-        scale = re.search(r"framerate scale factor:\s*([\d.]+)", output)
-        offset = float(offset.group(1)) if offset else None
-        scale = float(scale.group(1)) if scale else None
-        segments = re.search(r"split alignment:\s*(\d+) segment", output)
-        segments = int(segments.group(1)) if segments else 1
-
-        with open(out_path, "r", encoding="utf-8-sig") as f:
-            text = f.read()
+        with open(source_path, "rb") as f:
+            source = parse_srt(decode_srt(f.read()))
+        chunks = break_chunks(source) if source else None
+        if chunks:
+            text, offset, scale = _sync_by_breaks(job, cmd, env, video_path, reference, chunks, tmp_dir)
+            segments = len(chunks)
+        else:
+            text, offset, scale, segments = _sync_split(job, cmd, env, video_path, reference, source_path, tmp_dir)
         overlaps = islands = 0
         synced = parse_srt(text)
         if synced is not None:
-            with open(source_path, "rb") as f:
-                source = parse_srt(decode_srt(f.read())) or []
-            cues, overlaps, islands = tidy_synced_cues(source, synced)
+            cues, overlaps, islands = tidy_synced_cues(source or [], synced)
             text = format_srt(cues)
         # Keep the original: a re-run of our own output must not overwrite
         # it, but a newly downloaded subtitle becomes the new original. A
@@ -559,7 +657,7 @@ def _sync_one(job, folder, video, srt, env, cmd, reference):
         os.replace(staged, srt_path)
         with open(marker_path, "w", encoding="ascii") as f:
             f.write(_file_digest(srt_path))
-        return offset, scale, segments, overlaps, islands
+        return offset, scale, segments, overlaps, islands, bool(chunks)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -594,7 +692,7 @@ def run_autosync(job, folder):
             _alog(job, "dim", f"   subtitle: {srt} — aligning to {ref_text}…")
             ep_start = time.monotonic()
             try:
-                offset, scale, segments, overlaps, islands = _sync_one(job, folder, video, srt, env, cmd, reference)
+                offset, scale, segments, overlaps, islands, by_breaks = _sync_one(job, folder, video, srt, env, cmd, reference)
             except (RuntimeError, OSError) as e:
                 if job["cancel"]:
                     _alog(job, "warn", "   ⚠ Stopped — this subtitle was left unchanged")
@@ -609,7 +707,10 @@ def run_autosync(job, folder):
             results.append((video, offset, scale))
             off_txt = "unknown" if offset is None else f"{offset:+.3f}s"
             scale_txt = "unknown" if scale is None else f"{scale:.3f}"
-            parts_txt = "" if segments == 1 else f", {segments} sections with different offsets"
+            if by_breaks:
+                parts_txt = f", {segments} parts aligned separately at the translator's ad-break marks"
+            else:
+                parts_txt = "" if segments == 1 else f", {segments} sections with different offsets"
             if islands:
                 parts_txt += f", {islands} misplaced section(s) put back"
             if overlaps:

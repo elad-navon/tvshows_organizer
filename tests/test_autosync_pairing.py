@@ -5,7 +5,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from helper import (choose_reference, decode_srt, episode_tag, format_srt,  # noqa: E402
+from helper import (break_chunks, choose_reference, decode_srt, episode_tag, format_srt,  # noqa: E402
                     pair_videos_and_subs, parse_srt, tidy_synced_cues)
 
 
@@ -163,6 +163,16 @@ class TidyCuesTest(unittest.TestCase):
         orig = {c["text"]: c for c in texts}
         self.assertEqual(by_text["line 15"]["start"], orig["line 15"]["start"])        # back to the earlier offset
         self.assertEqual(by_text["line 25"]["start"], orig["line 25"]["start"] - 2000)  # after the break: unchanged
+
+
+class BreakChunksTest(unittest.TestCase):
+    def test_split_at_marks_and_drop_them(self):
+        cues = [_cue(0, 1, "a"), _cue(2, 3, "+"), _cue(4, 5, "b"), _cue(6, 7, " + "), _cue(8, 9, "c")]
+        self.assertEqual([[c["text"] for c in part] for part in break_chunks(cues)], [["a"], ["b"], ["c"]])
+
+    def test_no_marks_means_no_parts(self):
+        self.assertIsNone(break_chunks([_cue(0, 1, "a"), _cue(2, 3, "b")]))
+        self.assertIsNone(break_chunks([_cue(0, 1, "+"), _cue(2, 3, "a")]))  # a mark at the very start splits nothing
 
 
 class SrtRoundTripTest(unittest.TestCase):
