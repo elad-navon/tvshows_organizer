@@ -262,19 +262,23 @@ def decode_srt(raw):
 
 
 def parse_srt(text):
-    """[{start, end, rest, text}] in ms, or None if any block can't be read
-    (then the file is left exactly as ffsubsync wrote it)."""
+    """[{start, end, rest, text}] in ms, or None if there are no cues (then
+    the file is left exactly as ffsubsync wrote it). A block without a
+    timing line — a cue text with an empty line in it, or a stray fragment
+    such as a cut-off "i>" at the end — goes onto the cue before it."""
     cues = []
     for block in re.split(r"\r?\n[ \t]*\r?\n", text.strip()):
         lines = block.splitlines()
         timing = next((i for i, l in enumerate(lines[:2]) if SRT_TIMING_RE.match(l)), None)
         if timing is None:
-            return None
+            if cues and block.strip():
+                cues[-1]["text"] += "\n" + "\n".join(l.strip() for l in lines if l.strip())
+            continue
         g = SRT_TIMING_RE.match(lines[timing]).groups()
         ms = lambda h, m, s, f: ((int(h) * 60 + int(m)) * 60 + int(s)) * 1000 + int(f)
         cues.append({"start": ms(*g[0:4]), "end": ms(*g[4:8]), "rest": g[8].rstrip(),
                      "text": "\n".join(l.strip() for l in lines[timing + 1:])})
-    return cues
+    return cues or None
 
 
 def format_srt(cues):
@@ -386,7 +390,11 @@ def _fix_offset_islands(cues, shifts):
 
 SECTION_STEP_MS = 1000     # a smoothed offset change bigger than this is a section boundary
 SNAP_WINDOW_MS = 180000    # how far from ffsubsync's boundary the real one is looked for
-BREAK_MARKERS = {"+", "*", "#"}
+def is_break_marker(text):
+    """A translator's ad-break mark: a cue of only a few "+", "*" or "#"
+    (sometimes in italics, e.g. "<i>+++</i>")."""
+    plain = re.sub(r"<[^>]*>", "", text).strip()
+    return bool(plain) and len(plain) <= 5 and set(plain) <= set("+*#")
 
 
 def _snap_section_bounds(source, src_idx, cues, shifts):
@@ -421,7 +429,7 @@ def _snap_section_bounds(source, src_idx, cues, shifts):
             before, after = source[src_idx[b - 1]], source[src_idx[b]]
             if abs(after["start"] - at) > SNAP_WINDOW_MS or after["start"] - before["end"] < need:
                 continue
-            marker = any(source[m]["text"].strip() in BREAK_MARKERS for m in range(src_idx[b - 1] + 1, src_idx[b]))
+            marker = any(is_break_marker(source[m]["text"]) for m in range(src_idx[b - 1] + 1, src_idx[b]))
             key = (not marker, abs(b - cp), b)
             best = min(best, key) if best else key
         if not best or best[2] == cp:
@@ -481,6 +489,9 @@ def _pick_reference(video_path, env):
 MIN_CHUNK_CUES = 8               # fewer lines than this can't be aligned reliably on their own
 CHUNK_MAX_OFFSET_SECONDS = 30   # search range for the first part
 CHUNK_LOCAL_SECONDS = 6         # search range around the previous part's offset
+CHUNK_FIRST_SECONDS = 10        # search range for the first part around the whole subtitle's offset
+CHUNK_CENTERED_SECONDS = 3      # search range around a part's own estimate
+CENTER_MAX_DEVIATION_MS = 15000 # how far a part's estimate may be from the whole subtitle's offset
 
 
 def _run_process(job, argv, env):
@@ -530,7 +541,7 @@ def break_chunks(cues):
     (dropped). None unless that gives at least two parts."""
     chunks, current = [], []
     for c in cues:
-        if c["text"].strip() in BREAK_MARKERS:
+        if is_break_marker(c["text"]):
             if current:
                 chunks.append(current)
                 current = []
@@ -541,14 +552,85 @@ def break_chunks(cues):
     return chunks if len(chunks) >= 2 else None
 
 
-def _sync_by_breaks(job, cmd, env, video_path, reference, chunks, tmp_dir):
+INFER_SMOOTH = 15             # cues on each side of the median that finds the steady offsets
+INFER_MIN_PART = 30           # fewest cues between two inferred breaks
+INFER_GAP_WINDOW_MS = 60000   # how far from the step the break's gap is looked for
+
+
+def infer_break_chunks(source, synced):
+    """Without the translator's marks, ffsubsync's piecewise result still
+    shows roughly where the offset steps at each ad break, though around
+    them it is often noisy (cues thrown tens of seconds away). A wide
+    median keeps only the steady offsets; each step becomes a break placed
+    in the longest gap of the source near it. Returns (the source's lines
+    split there, like break_chunks; each part's median offset in ms), or
+    None."""
+    unused = {}
+    for i, c in enumerate(source):
+        unused.setdefault(c["text"], []).append(i)
+    pairs = []
+    for c in synced:
+        if not unused.get(c["text"]):
+            return None
+        pairs.append((unused[c["text"]].pop(0), c["start"]))
+    pairs.sort()
+    n = len(pairs)
+    if n < 2 * INFER_MIN_PART:
+        return None
+    shifts = [start - source[i]["start"] for i, start in pairs]
+    def median_around(j):
+        window = sorted(shifts[max(0, j - INFER_SMOOTH):j + INFER_SMOOTH + 1])
+        return window[len(window) // 2]
+    smooth = [median_around(j) for j in range(n)]
+    steps = []
+    for j in range(INFER_MIN_PART, n - INFER_MIN_PART + 1):
+        if abs(smooth[j] - smooth[j - 1]) > SECTION_STEP_MS and (not steps or j - steps[-1] >= INFER_MIN_PART):
+            steps.append(j)
+
+    cuts = []  # source indices a new part starts at
+    for j in steps:
+        at = source[pairs[j][0]]["start"]
+        best = None
+        for b in range(max(1, j - INFER_MIN_PART), min(n, j + INFER_MIN_PART)):
+            after, before = source[pairs[b][0]], source[pairs[b - 1][0]]
+            if abs(after["start"] - at) <= INFER_GAP_WINDOW_MS:
+                gap = after["start"] - before["end"]
+                best = max(best, (gap, -abs(b - j), b)) if best else (gap, -abs(b - j), b)
+        cut = pairs[best[2]][0]
+        if not cuts or cut > cuts[-1]:
+            cuts.append(cut)
+    if not cuts:
+        return None
+    bounds = [0] + cuts + [len(source)]
+    chunks, centers = [], []
+    for a, b in zip(bounds, bounds[1:]):
+        chunk = [c for c in source[a:b] if not is_break_marker(c["text"])]
+        own = sorted(shifts[k] for k, (i, _) in enumerate(pairs) if a <= i < b)
+        if chunk and own:
+            chunks.append(chunk)
+            centers.append(own[len(own) // 2])  # the median ignores the noisy cues
+    if len(chunks) < 2:
+        return None
+    # A short part where ffsubsync was mostly noise (often the first or last
+    # minutes: S01E07 -57s, S01E04 -41s) gets a median far from its
+    # neighbours; it takes the neighbour's estimate instead.
+    for k in range(len(centers)):
+        near = [centers[j] for j in (k - 1, k + 1) if 0 <= j < len(centers)]
+        if all(abs(centers[k] - n) > ISLAND_JUMP_MS for n in near):
+            centers[k] = near[0]
+    return chunks, centers
+
+
+def _sync_by_breaks(job, cmd, env, video_path, reference, chunks, tmp_dir, centers=None):
     """When the translator marked the ad breaks, they are where the offset
     changes — more reliable than ffsubsync guessing the boundaries (it
     misses some and invents others). Each part between two marks is aligned
     on its own with a single offset. The reference is extracted and analysed
     once (into tmp_dir, never next to the video), so each part takes about a
     second. A part too short to align takes the offset of the part before
-    it. Returns (text, offset of the first part, scale)."""
+    it. `centers` (ms per part) are estimates to search narrowly around,
+    e.g. from ffsubsync's piecewise result. Returns (text, offset of the
+    first part, scale)."""
     stream = reference or "a:0"
     ffmpeg = shutil.which("ffmpeg", path=env["PATH"])
     if stream.startswith("s:"):
@@ -572,23 +654,45 @@ def _sync_by_breaks(job, cmd, env, video_path, reference, chunks, tmp_dir):
         m = re.search(r"offset seconds:\s*(-?[\d.]+)", output)
         return pre_ms + round(float(m.group(1)) * 1000) if m else None
 
-    # A break changes the offset by a few seconds, so after the first part
-    # each one is searched close to the offset before it: a short part
-    # searched widely can lock onto similar speech far away (S01E11: +29s
-    # instead of -5.4s). Only a result at the edge of the close search
-    # (an unusually long cut) falls back to the wide one.
+    def at_edge(found, center, window_s):
+        return found is None or abs(found - center) > (window_s - 0.5) * 1000
+
+    # A part searched widely can lock onto similar speech far away (S01E11
+    # part 5: +29s instead of -5.4s; S01E07 part 1: +22s instead of +1.8s),
+    # so every search is narrow around an estimate:
+    # - given centers: the part's own estimate; a result at the edge keeps it;
+    # - otherwise the first part searches around the whole subtitle's single
+    #   offset (all lines together lock reliably), and each next part around
+    #   the part before it, since a break changes the offset by a few seconds.
+    #   Only a result at the edge of that (an unusually long cut) falls back
+    #   to a wide search.
     offsets, prev = [], None
+    whole = align("all", [c for chunk in chunks for c in chunk], 0, CHUNK_MAX_OFFSET_SECONDS)
+    if centers is None:
+        prev = whole
+        first_window = CHUNK_FIRST_SECONDS
+    elif whole is not None:
+        # Neighbouring parts can be noisy the same way (S01E04: the first two
+        # both +24s); every part stays within a few breaks of the whole
+        # subtitle's offset, so an estimate further out takes the nearest
+        # sound one.
+        sound = [abs(c - whole) <= CENTER_MAX_DEVIATION_MS for c in centers]
+        if any(sound):
+            centers = [c if ok else centers[min((j for j in range(len(centers)) if sound[j]), key=lambda j: abs(j - k))]
+                       for k, (c, ok) in enumerate(zip(centers, sound))]
     for k, chunk in enumerate(chunks):
         if len(chunk) < MIN_CHUNK_CUES:
             offsets.append(None)
             continue
-        found = None
-        if prev is not None:
-            found = align(k, chunk, prev, CHUNK_LOCAL_SECONDS)
-            if found is not None and abs(found - prev) > (CHUNK_LOCAL_SECONDS - 0.5) * 1000:
-                found = None
-        if found is None:
-            found = align(k, chunk, 0, CHUNK_MAX_OFFSET_SECONDS)
+        if centers is not None:
+            found = align(k, chunk, centers[k], CHUNK_CENTERED_SECONDS)
+            if at_edge(found, centers[k], CHUNK_CENTERED_SECONDS):
+                found = centers[k]
+        else:
+            window = first_window if not offsets or all(o is None for o in offsets) else CHUNK_LOCAL_SECONDS
+            found = align(k, chunk, prev or 0, window) if prev is not None else None
+            if at_edge(found, prev or 0, window):
+                found = align(k, chunk, 0, CHUNK_MAX_OFFSET_SECONDS)
         offsets.append(found)
         prev = found if found is not None else prev
     known = [o for o in offsets if o is not None]
@@ -628,11 +732,18 @@ def _sync_one(job, folder, video, srt, env, cmd, reference):
         with open(source_path, "rb") as f:
             source = parse_srt(decode_srt(f.read()))
         chunks = break_chunks(source) if source else None
-        if chunks:
-            text, offset, scale = _sync_by_breaks(job, cmd, env, video_path, reference, chunks, tmp_dir)
-            segments = len(chunks)
-        else:
+        centers = None
+        mode = "marks" if chunks else "split"
+        if not chunks:
             text, offset, scale, segments = _sync_split(job, cmd, env, video_path, reference, source_path, tmp_dir)
+            split_cues = parse_srt(text)
+            inferred = infer_break_chunks(source, split_cues) if source and split_cues else None
+            if inferred:
+                chunks, centers = inferred
+                mode = "inferred"
+        if chunks:
+            text, offset, scale = _sync_by_breaks(job, cmd, env, video_path, reference, chunks, tmp_dir, centers)
+            segments = len(chunks)
         overlaps = islands = 0
         synced = parse_srt(text)
         if synced is not None:
@@ -657,7 +768,7 @@ def _sync_one(job, folder, video, srt, env, cmd, reference):
         os.replace(staged, srt_path)
         with open(marker_path, "w", encoding="ascii") as f:
             f.write(_file_digest(srt_path))
-        return offset, scale, segments, overlaps, islands, bool(chunks)
+        return offset, scale, segments, overlaps, islands, mode
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -692,7 +803,7 @@ def run_autosync(job, folder):
             _alog(job, "dim", f"   subtitle: {srt} — aligning to {ref_text}…")
             ep_start = time.monotonic()
             try:
-                offset, scale, segments, overlaps, islands, by_breaks = _sync_one(job, folder, video, srt, env, cmd, reference)
+                offset, scale, segments, overlaps, islands, mode = _sync_one(job, folder, video, srt, env, cmd, reference)
             except (RuntimeError, OSError) as e:
                 if job["cancel"]:
                     _alog(job, "warn", "   ⚠ Stopped — this subtitle was left unchanged")
@@ -707,8 +818,10 @@ def run_autosync(job, folder):
             results.append((video, offset, scale))
             off_txt = "unknown" if offset is None else f"{offset:+.3f}s"
             scale_txt = "unknown" if scale is None else f"{scale:.3f}"
-            if by_breaks:
+            if mode == "marks":
                 parts_txt = f", {segments} parts aligned separately at the translator's ad-break marks"
+            elif mode == "inferred":
+                parts_txt = f", {segments} parts aligned separately at the detected ad breaks"
             else:
                 parts_txt = "" if segments == 1 else f", {segments} sections with different offsets"
             if islands:

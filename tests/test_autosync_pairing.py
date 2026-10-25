@@ -6,7 +6,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from helper import (break_chunks, choose_reference, decode_srt, episode_tag, format_srt,  # noqa: E402
-                    pair_videos_and_subs, parse_srt, tidy_synced_cues)
+                    infer_break_chunks, is_break_marker, pair_videos_and_subs, parse_srt,
+                    tidy_synced_cues)
 
 
 class EpisodeTagTest(unittest.TestCase):
@@ -174,6 +175,29 @@ class BreakChunksTest(unittest.TestCase):
         self.assertIsNone(break_chunks([_cue(0, 1, "a"), _cue(2, 3, "b")]))
         self.assertIsNone(break_chunks([_cue(0, 1, "+"), _cue(2, 3, "a")]))  # a mark at the very start splits nothing
 
+    def test_marks_in_italics_or_repeated(self):
+        for text in ("+", "+++", "<i>+++</i>", " * ", "##"):
+            self.assertTrue(is_break_marker(text), text)
+        for text in ("+ yes", "2+2", "++++++", ""):
+            self.assertFalse(is_break_marker(text), text)
+
+    def test_steps_in_split_result_become_parts_at_the_longest_gap(self):
+        # 100 lines 3s apart, a 6s gap after line 49; ffsubsync stepped the
+        # offset from 0 to -2s at line 46, with a noisy line thrown far away.
+        source, t = [], 0
+        for i in range(100):
+            t += 6000 if i == 50 else 3000
+            source.append(_cue(t, t + 2000, f"line {i}"))
+        shift = lambda i: 40000 if i == 70 else (0 if i < 46 else -2000)
+        synced = [_cue(c["start"] + shift(i), c["end"] + shift(i), c["text"]) for i, c in enumerate(source)]
+        parts, centers = infer_break_chunks(source, sorted(synced, key=lambda c: c["start"]))
+        self.assertEqual([len(p) for p in parts], [50, 50])
+        self.assertEqual(centers, [0, -2000])
+
+    def test_steady_offset_gives_no_parts(self):
+        source = [_cue(i * 3000, i * 3000 + 2000, f"line {i}") for i in range(100)]
+        self.assertIsNone(infer_break_chunks(source, [dict(c) for c in source]))
+
 
 class SrtRoundTripTest(unittest.TestCase):
     def test_parse_and_format(self):
@@ -186,6 +210,11 @@ class SrtRoundTripTest(unittest.TestCase):
 
     def test_unreadable_block_means_hands_off(self):
         self.assertIsNone(parse_srt("1\nnot a timing line\nhello\n"))
+
+    def test_stray_fragment_joins_the_cue_before(self):
+        cues = parse_srt("1\n00:00:01,000 --> 00:00:02,000\n<i>+++</i>\n\ni>\n")
+        self.assertEqual(len(cues), 1)
+        self.assertEqual(cues[0]["text"], "<i>+++</i>\ni>")
 
     def test_decode_windows_1255(self):
         self.assertEqual(decode_srt("שלום".encode("cp1255")), "שלום")
