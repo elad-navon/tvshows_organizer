@@ -5,8 +5,8 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from helper import (break_chunks, choose_reference, decode_srt, episode_tag, format_srt,  # noqa: E402
-                    infer_break_chunks, is_break_marker, pair_videos_and_subs, parse_srt,
+from helper import (break_chunks, choose_reference, decode_srt, episode_tag, find_unmarked_break,  # noqa: E402
+                    format_srt, infer_break_chunks, is_break_marker, pair_videos_and_subs, parse_srt,
                     tidy_synced_cues)
 
 
@@ -206,6 +206,46 @@ class BreakChunksTest(unittest.TestCase):
     def test_steady_offset_gives_no_parts(self):
         source = [_cue(i * 3000, i * 3000 + 2000, f"line {i}") for i in range(100)]
         self.assertIsNone(infer_break_chunks(source, [dict(c) for c in source]))
+
+
+def _fake_ffsubsync(true_offset):
+    """Stands in for ffsubsync and the speech: a part aligns at its lines'
+    most common true offset (if inside the window), and a line fits the
+    speech only at its own true offset."""
+    def measure(cues, center, window_s):
+        offsets = [true_offset(c) for c in cues]
+        best = max(set(offsets), key=offsets.count)
+        return best if abs(best - center) <= window_s * 1000 else None
+    def fit(cue, offset):
+        return cue["end"] - cue["start"] if offset == true_offset(cue) else 0
+    return measure, fit
+
+
+class UnmarkedBreakTest(unittest.TestCase):
+    def setUp(self):
+        self.chunk = [_cue(i * 3000, i * 3000 + 2000, f"line {i}") for i in range(120)]
+
+    def test_break_is_placed_where_the_offset_changes(self):
+        cut = self.chunk[70]["start"]
+        measure, fit = _fake_ffsubsync(lambda c: 7800 if c["start"] < cut else 11800)
+        self.assertEqual(find_unmarked_break(self.chunk, 11300, measure, fit), (70, 7800, 11800))
+
+    def test_break_near_the_end_of_the_part(self):
+        cut = self.chunk[95]["start"]
+        measure, fit = _fake_ffsubsync(lambda c: 0 if c["start"] < cut else -3000)
+        self.assertEqual(find_unmarked_break(self.chunk, 0, measure, fit), (95, 0, -3000))
+
+    def test_one_offset_means_no_break(self):
+        self.assertIsNone(find_unmarked_break(self.chunk, 7000, *_fake_ffsubsync(lambda c: 7800)))
+
+    def test_short_part_is_left_alone(self):
+        measure, fit = _fake_ffsubsync(lambda c: 0 if c["start"] < self.chunk[25]["start"] else 4000)
+        self.assertIsNone(find_unmarked_break(self.chunk[:50], 0, measure, fit))
+
+    def test_a_third_measured_far_off_is_not_a_break(self):
+        _, fit = _fake_ffsubsync(lambda c: 0)
+        noisy = lambda cues, center, window_s: 4000 if cues[0]["start"] >= self.chunk[80]["start"] else 0
+        self.assertIsNone(find_unmarked_break(self.chunk, 0, noisy, fit))
 
 
 class SrtRoundTripTest(unittest.TestCase):

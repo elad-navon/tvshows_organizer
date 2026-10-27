@@ -658,6 +658,67 @@ def _align_part(job, cmd, env, ref_path, tmp_dir, tag, cues, pre_ms, window_s):
     return pre_ms + round(float(m.group(1)) * 1000) if m else None
 
 
+def _speech_fit(ref_path):
+    """fit(cue, offset_ms): how much of the reference's speech (or its
+    subtitle lines) falls under the cue shifted by offset_ms — from the
+    10ms-step array ffsubsync serialized, or one built from ref.srt."""
+    import numpy as np  # ships with ffsubsync
+    if ref_path.endswith(".npz"):
+        speech = np.load(ref_path)["speech"]
+    else:
+        with open(ref_path, "rb") as f:
+            ref = parse_srt(decode_srt(f.read())) or []
+        speech = np.zeros(max((c["end"] for c in ref), default=0) // 10 + 1)
+        for c in ref:
+            speech[c["start"] // 10:c["end"] // 10] = 1
+    def fit(cue, offset):
+        a = max(0, (cue["start"] + offset) // 10)
+        return float(speech[a:max(a + 1, (cue["end"] + offset) // 10)].sum())
+    return fit
+
+
+SPLIT_MIN_CUES = 20           # fewest lines on each side of a break the translator didn't mark, and in each third measured
+SPLIT_WINDOW_SECONDS = 2      # search range around each side's offset once the break is placed
+SPLIT_MIN_GAIN = 0.03         # how much better the two sides must fit the speech than the whole part did (S02E03: +13% real, -1% noise)
+
+
+def find_unmarked_break(chunk, offset, measure, fit):
+    """A part between two marks can still hold a break the translator didn't
+    mark (S02E03: the last part is really +7.8s then +11.8s, and its single
+    offset left four minutes 3.5s late). Its first and last thirds are
+    measured on their own; if they disagree, the break goes where the lines
+    before it fit the speech best at the first offset and the lines after
+    it at the last (ffsubsync's own scores can't be compared between parts
+    of different lengths). A third of only a few lines can be measured far
+    off, so the split is kept only if it fits the speech clearly better than
+    the part's single offset. `measure(cues, center_ms, window_s)` returns an
+    offset or None; `fit(cue, offset)` scores one line. Returns (index the
+    second side starts at, offset before, offset after), or None."""
+    n = len(chunk)
+    if n < 3 * SPLIT_MIN_CUES:
+        return None
+    head = measure(chunk[:n // 3], offset, CHUNK_LOCAL_SECONDS)
+    tail = measure(chunk[n - n // 3:], offset, CHUNK_LOCAL_SECONDS)
+    if head is None or tail is None or abs(head - tail) <= SECTION_STEP_MS:
+        return None
+    gain = [fit(c, head) - fit(c, tail) for c in chunk]  # > 0: the line belongs before the break
+    best, total = None, sum(gain[:SPLIT_MIN_CUES - 1])
+    for j in range(SPLIT_MIN_CUES, n - SPLIT_MIN_CUES + 1):
+        total += gain[j - 1]
+        if best is None or total > best[0]:
+            best = (total, j)
+    j = best[1]
+    before = measure(chunk[:j], head, SPLIT_WINDOW_SECONDS)
+    after = measure(chunk[j:], tail, SPLIT_WINDOW_SECONDS)
+    before = head if before is None else before
+    after = tail if after is None else after
+    kept = sum(fit(c, offset) for c in chunk)
+    split = sum(fit(c, before) for c in chunk[:j]) + sum(fit(c, after) for c in chunk[j:])
+    if split <= kept * (1 + SPLIT_MIN_GAIN):
+        return None
+    return j, before, after
+
+
 STEADY_PROBES = 6             # equal parts the steadiness check measures separately
 STEADY_AGREE = 5              # how many of them must agree for a single offset
 STEADY_TOLERANCE_MS = 700
@@ -689,8 +750,9 @@ def _sync_by_breaks(job, cmd, env, ref_path, chunks, tmp_dir, centers=None):
     on its own with a single offset, against the reference prepared by
     _prepare_reference. A part too short to align takes the offset of the
     part before it. `centers` (ms per part) are estimates to search narrowly
-    around, e.g. from ffsubsync's piecewise result. Returns (text, offset of
-    the first part, scale)."""
+    around, e.g. from ffsubsync's piecewise result. A part still holding a
+    break nobody marked is split there (find_unmarked_break). Returns (text,
+    offset of the first part, scale, number of parts)."""
     def align(k, chunk, pre_ms, window_s):
         return _align_part(job, cmd, env, ref_path, tmp_dir, k, chunk, pre_ms, window_s)
 
@@ -739,11 +801,25 @@ def _sync_by_breaks(job, cmd, env, ref_path, chunks, tmp_dir, centers=None):
     if not known:
         raise RuntimeError("none of the parts between the ad breaks could be aligned")
 
+    def measure(cues, center, window_s):
+        return align("split", cues, center, window_s)
+
+    fit = _speech_fit(ref_path)
+    chunks, k = list(chunks), 0
+    while k < len(chunks):
+        split = find_unmarked_break(chunks[k], offsets[k], measure, fit) if offsets[k] is not None else None
+        if split:
+            j, before, after = split
+            chunks[k:k + 1] = [chunks[k][:j], chunks[k][j:]]
+            offsets[k:k + 1] = [before, after]
+            continue  # the first side may hold another one
+        k += 1
+
     cues, current = [], known[0]
     for chunk, o in zip(chunks, offsets):
         current = o if o is not None else current
         cues += [dict(c, start=c["start"] + current, end=c["end"] + current) for c in chunk]
-    return format_srt(cues), known[0] / 1000, 1.0
+    return format_srt(cues), known[0] / 1000, 1.0, len(chunks)
 
 
 def _file_digest(path):
@@ -790,8 +866,7 @@ def _sync_one(job, folder, video, srt, env, cmd, reference):
                     chunks, centers = inferred
                     mode = "inferred"
             if chunks:
-                text, offset, scale = _sync_by_breaks(job, cmd, env, ref_path, chunks, tmp_dir, centers)
-                segments = len(chunks)
+                text, offset, scale, segments = _sync_by_breaks(job, cmd, env, ref_path, chunks, tmp_dir, centers)
         overlaps = islands = 0
         synced = parse_srt(text)
         if synced is not None:
