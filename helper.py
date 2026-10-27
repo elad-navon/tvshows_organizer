@@ -315,15 +315,22 @@ def tidy_synced_cues(source, synced):
         cues = [dict(c) for _, c in pairs]
         shifts = [c["start"] - source[i]["start"] for i, c in pairs]
         islands = _fix_offset_islands(cues, shifts)
-        _snap_section_bounds(source, [i for i, _ in pairs], cues, shifts)
+        src_of = [i for i, _ in pairs]
+        _snap_section_bounds(source, src_of, cues, shifts)
     else:
         cues = [dict(c) for c in synced]
+        src_of = None
 
     fixed = 0
     for i in range(len(cues) - 1):
         prev, cur = cues[i], cues[i + 1]
         if cur["start"] >= prev["end"]:
             continue
+        if src_of:
+            # Two people talking at once: the translator's own overlap stays.
+            was = source[src_of[i]]["end"] - source[src_of[i + 1]]["start"]
+            if was > 0 and prev["end"] - cur["start"] <= was + 100:
+                continue
         fixed += 1
         needed = prev["end"] + CUE_GAP_MS - cur["start"]
         room_after = cues[i + 2]["start"] - CUE_GAP_MS - cur["end"] if i + 2 < len(cues) else needed
@@ -621,38 +628,71 @@ def infer_break_chunks(source, synced):
     return chunks, centers
 
 
-def _sync_by_breaks(job, cmd, env, video_path, reference, chunks, tmp_dir, centers=None):
-    """When the translator marked the ad breaks, they are where the offset
-    changes — more reliable than ffsubsync guessing the boundaries (it
-    misses some and invents others). Each part between two marks is aligned
-    on its own with a single offset. The reference is extracted and analysed
-    once (into tmp_dir, never next to the video), so each part takes about a
-    second. A part too short to align takes the offset of the part before
-    it. `centers` (ms per part) are estimates to search narrowly around,
-    e.g. from ffsubsync's piecewise result. Returns (text, offset of the
-    first part, scale)."""
+def _prepare_reference(job, cmd, env, video_path, reference, tmp_dir):
+    """Extracts what the parts are aligned against, once per episode, into
+    tmp_dir (never next to the video): the English subtitle track, or the
+    audio track analysed into speech (ffsubsync --serialize-speech), so
+    each later alignment takes about a second. Returns its path."""
     stream = reference or "a:0"
     ffmpeg = shutil.which("ffmpeg", path=env["PATH"])
     if stream.startswith("s:"):
         ref_path = os.path.join(tmp_dir, "ref.srt")
         _run_process(job, [ffmpeg, "-v", "error", "-y", "-i", video_path, "-map", f"0:{stream}", ref_path], env)
-    else:
-        wav_path = os.path.join(tmp_dir, "ref.wav")
-        _run_process(job, [ffmpeg, "-v", "error", "-y", "-i", video_path, "-map", f"0:{stream}",
-                           "-ac", "1", "-ar", "16000", wav_path], env)
-        _run_process(job, cmd + [wav_path, "--serialize-speech"], env)
-        ref_path = os.path.join(tmp_dir, "ref.npz")
+        return ref_path
+    wav_path = os.path.join(tmp_dir, "ref.wav")
+    _run_process(job, [ffmpeg, "-v", "error", "-y", "-i", video_path, "-map", f"0:{stream}",
+                       "-ac", "1", "-ar", "16000", wav_path], env)
+    _run_process(job, cmd + [wav_path, "--serialize-speech"], env)
+    return os.path.join(tmp_dir, "ref.npz")
 
+
+def _align_part(job, cmd, env, ref_path, tmp_dir, tag, cues, pre_ms, window_s):
+    """One offset (ms) for `cues`, searched within window_s of pre_ms, or None."""
+    part_in = os.path.join(tmp_dir, f"part-{tag}.srt")
+    with open(part_in, "w", encoding="utf-8", newline="") as f:
+        f.write(format_srt([dict(c, start=c["start"] + pre_ms, end=c["end"] + pre_ms) for c in cues]))
+    output = _run_process(job, cmd + [ref_path, "-i", part_in, "-o", part_in + ".out",
+                                      "--output-encoding", "utf-8", "--no-fix-framerate",
+                                      "--max-offset-seconds", str(window_s)], env)
+    m = re.search(r"offset seconds:\s*(-?[\d.]+)", output)
+    return pre_ms + round(float(m.group(1)) * 1000) if m else None
+
+
+STEADY_PROBES = 6             # equal parts the steadiness check measures separately
+STEADY_AGREE = 5              # how many of them must agree for a single offset
+STEADY_TOLERANCE_MS = 700
+
+
+def _steady_offset(job, cmd, env, ref_path, tmp_dir, cues):
+    """Many subtitles were made for the very same cut as the video and only
+    need one offset; piecewise alignment then invents sections anyway
+    (S02E18: 200 lines moved, S02E14: the closing minutes thrown 39s away).
+    The whole subtitle's offset is checked against STEADY_PROBES equal parts
+    measured on their own: if nearly all agree, that offset is returned for
+    everything; otherwise None."""
+    whole = _align_part(job, cmd, env, ref_path, tmp_dir, "whole", cues, 0, CHUNK_MAX_OFFSET_SECONDS)
+    if whole is None or len(cues) < STEADY_PROBES * MIN_CHUNK_CUES:
+        return None
+    n = len(cues)
+    agree = 0
+    for k in range(STEADY_PROBES):
+        part = cues[k * n // STEADY_PROBES:(k + 1) * n // STEADY_PROBES]
+        found = _align_part(job, cmd, env, ref_path, tmp_dir, f"probe{k}", part, 0, CHUNK_MAX_OFFSET_SECONDS)
+        agree += found is not None and abs(found - whole) <= STEADY_TOLERANCE_MS
+    return whole if agree >= STEADY_AGREE else None
+
+
+def _sync_by_breaks(job, cmd, env, ref_path, chunks, tmp_dir, centers=None):
+    """When the translator marked the ad breaks, they are where the offset
+    changes — more reliable than ffsubsync guessing the boundaries (it
+    misses some and invents others). Each part between two marks is aligned
+    on its own with a single offset, against the reference prepared by
+    _prepare_reference. A part too short to align takes the offset of the
+    part before it. `centers` (ms per part) are estimates to search narrowly
+    around, e.g. from ffsubsync's piecewise result. Returns (text, offset of
+    the first part, scale)."""
     def align(k, chunk, pre_ms, window_s):
-        """Offset (ms) for `chunk` found within window_s of pre_ms, or None."""
-        chunk_in = os.path.join(tmp_dir, f"part{k}.srt")
-        with open(chunk_in, "w", encoding="utf-8", newline="") as f:
-            f.write(format_srt([dict(c, start=c["start"] + pre_ms, end=c["end"] + pre_ms) for c in chunk]))
-        output = _run_process(job, cmd + [ref_path, "-i", chunk_in, "-o", chunk_in + ".out",
-                                          "--output-encoding", "utf-8", "--no-fix-framerate",
-                                          "--max-offset-seconds", str(window_s)], env)
-        m = re.search(r"offset seconds:\s*(-?[\d.]+)", output)
-        return pre_ms + round(float(m.group(1)) * 1000) if m else None
+        return _align_part(job, cmd, env, ref_path, tmp_dir, k, chunk, pre_ms, window_s)
 
     def at_edge(found, center, window_s):
         return found is None or abs(found - center) > (window_s - 0.5) * 1000
@@ -731,19 +771,27 @@ def _sync_one(job, folder, video, srt, env, cmd, reference):
     try:
         with open(source_path, "rb") as f:
             source = parse_srt(decode_srt(f.read()))
-        chunks = break_chunks(source) if source else None
-        centers = None
-        mode = "marks" if chunks else "split"
-        if not chunks:
-            text, offset, scale, segments = _sync_split(job, cmd, env, video_path, reference, source_path, tmp_dir)
-            split_cues = parse_srt(text)
-            inferred = infer_break_chunks(source, split_cues) if source and split_cues else None
-            if inferred:
-                chunks, centers = inferred
-                mode = "inferred"
-        if chunks:
-            text, offset, scale = _sync_by_breaks(job, cmd, env, video_path, reference, chunks, tmp_dir, centers)
-            segments = len(chunks)
+        ref_path = _prepare_reference(job, cmd, env, video_path, reference, tmp_dir) if source else None
+        lines = [c for c in source if not is_break_marker(c["text"])] if source else []
+        steady = _steady_offset(job, cmd, env, ref_path, tmp_dir, lines) if lines else None
+        chunks = centers = None
+        if steady is not None:
+            mode = "single"
+            text = format_srt([dict(c, start=c["start"] + steady, end=c["end"] + steady) for c in lines])
+            offset, scale, segments = steady / 1000, 1.0, 1
+        else:
+            chunks = break_chunks(source) if source else None
+            mode = "marks" if chunks else "split"
+            if not chunks:
+                text, offset, scale, segments = _sync_split(job, cmd, env, video_path, reference, source_path, tmp_dir)
+                split_cues = parse_srt(text)
+                inferred = infer_break_chunks(source, split_cues) if source and split_cues else None
+                if inferred:
+                    chunks, centers = inferred
+                    mode = "inferred"
+            if chunks:
+                text, offset, scale = _sync_by_breaks(job, cmd, env, ref_path, chunks, tmp_dir, centers)
+                segments = len(chunks)
         overlaps = islands = 0
         synced = parse_srt(text)
         if synced is not None:
@@ -818,7 +866,9 @@ def run_autosync(job, folder):
             results.append((video, offset, scale))
             off_txt = "unknown" if offset is None else f"{offset:+.3f}s"
             scale_txt = "unknown" if scale is None else f"{scale:.3f}"
-            if mode == "marks":
+            if mode == "single":
+                parts_txt = ", one offset for the whole episode (it matches the video's cut)"
+            elif mode == "marks":
                 parts_txt = f", {segments} parts aligned separately at the translator's ad-break marks"
             elif mode == "inferred":
                 parts_txt = f", {segments} parts aligned separately at the detected ad breaks"

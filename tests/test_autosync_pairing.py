@@ -109,18 +109,27 @@ class TidyCuesTest(unittest.TestCase):
         self.assertEqual((cues[1]["start"], cues[1]["end"]), (1840, 2840))
 
     def test_no_room_shortens_earlier_cue_then_pushes(self):
-        source = [_cue(0, 3000, "A"), _cue(2000, 3000, "B"), _cue(3100, 4000, "C")]
-        cues, fixed, _ = tidy_synced_cues(source, [dict(c) for c in source])
+        # No overlap in the source: the sync moved B and C back 1.1s into A.
+        source = [_cue(0, 3000, "A"), _cue(3100, 4100, "B"), _cue(4200, 5100, "C")]
+        synced = [source[0], _cue(2000, 3000, "B"), _cue(3100, 4000, "C")]
+        cues, fixed, _ = tidy_synced_cues(source, synced)
         self.assertEqual(cues[0]["end"], 1960)  # A shortened, still readable
         self.assertEqual(cues[1]["start"], 2000)
         for prev, cur in zip(cues, cues[1:]):
             self.assertGreaterEqual(cur["start"], prev["end"])
 
     def test_never_shortens_below_minimum(self):
-        source = [_cue(0, 2000, "A"), _cue(100, 1000, "B")]
-        cues, _, _ = tidy_synced_cues(source, [dict(c) for c in source])
+        source = [_cue(0, 2000, "A"), _cue(2100, 3000, "B")]
+        cues, _, _ = tidy_synced_cues(source, [source[0], _cue(100, 1000, "B")])
         self.assertEqual(cues[0]["end"], 2000)       # last cue: nothing after B, so B moves
         self.assertEqual(cues[1]["start"], 2040)
+
+    def test_translators_own_overlap_is_kept(self):
+        source = [_cue(0, 2000, "A"), _cue(1500, 3000, "B"), _cue(9000, 9500, "C")]
+        synced = [_cue(c["start"] + 400, c["end"] + 400, c["text"]) for c in source]
+        cues, fixed, _ = tidy_synced_cues(source, synced)
+        self.assertEqual(fixed, 0)
+        self.assertEqual((cues[1]["start"], cues[1]["end"]), (1900, 3400))
 
     def test_changed_text_keeps_synced_order(self):
         cues, fixed, _ = tidy_synced_cues([_cue(0, 1000, "X")], [_cue(0, 1000, "A"), _cue(2000, 3000, "B")])
