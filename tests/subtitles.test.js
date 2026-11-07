@@ -389,3 +389,70 @@ test("large file: 3,000 cues round-trip and shift quickly", () => {
   assert.equal(srt.parseSrt(out).cues[2999].timestamp, srt.formatTimestampLine(5998000 + 2500, 5999500 + 2500, ""));
   assert.ok(Date.now() - t0 < 2000);
 });
+
+// ---------------------------------------------------------------- Gemini engine
+const geminiCues = () => srt.parseSrt(SAMPLE).cues;
+const geminiFast = { sleep: async () => {}, pacingMs: 0 };
+
+test("geminiLines: restores the italic wrap and dialogue dashes, applies the RTL fix", () => {
+  const cues = geminiCues();
+  const italic = tr.cueToUnits(cues[1].textLines);
+  assert.deepEqual(tr.geminiLines(italic, "אתה בא או לא?!", true), ["<i>?!אתה בא או לא</i>"]);
+  const dialogue = tr.cueToUnits(cues[3].textLines);
+  assert.deepEqual(tr.geminiLines(dialogue, "- רגע...\n- מה?", false), ["- רגע...", "- מה?"]);
+  assert.equal(tr.geminiLines(italic, "  ", false), null);
+});
+
+test("splitLongLine: splits at the space nearest the middle, leaves short lines", () => {
+  assert.deepEqual(tr.splitLongLine("קצר"), ["קצר"]);
+  const long = "אז הוא היה חייב להיות חכם יותר וגם ערמומי יותר";
+  const parts = tr.splitLongLine(long);
+  assert.equal(parts.length, 2);
+  assert.equal(parts.join(" "), long);
+  assert.ok(Math.abs(parts[0].length - parts[1].length) < 8);
+});
+
+test("translateCuesGemini: builds the sheet once, translates every cue, keeps timing", async () => {
+  const src = geminiCues();
+  const working = src.map(c => ({ ...c }));
+  const calls = [];
+  const gemini = async (system, user) => {
+    calls.push(user);
+    if (user.startsWith("TRANSCRIPT")) return { ok: true, data: { synopsis: "", characters: [{ name: "A", hebrew: "א", gender: "male" }], glossary: [], tone: "" } };
+    const ids = [...user.split("BATCH")[1].matchAll(/^\[(\d+)\]/gm)].map(m => Number(m[1]));
+    return { ok: true, data: { translations: ids.map(id => ({ id, text: `שורה ${id}` })), story_so_far: "s" } };
+  };
+  const r = await tr.translateCuesGemini(src, working, [0, 1, 2, 3], false, { gemini, ...geminiFast });
+  assert.equal(r.translatedCues, 4);
+  assert.deepEqual(r.failedCues, []);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(working[0].textLines, ["שורה 1"]);
+  assert.equal(working[3].timestamp, src[3].timestamp);
+  assert.deepEqual(src[0].textLines, ["Hello there, friend."]); // source untouched
+});
+
+test("translateCuesGemini: asks again for missing ids, then reports what's still missing", async () => {
+  const src = geminiCues();
+  const working = src.map(c => ({ ...c }));
+  let batchCalls = 0;
+  const gemini = async (system, user) => {
+    if (user.startsWith("TRANSCRIPT")) return { ok: false, error: "x", fatal: false };
+    batchCalls++;
+    return { ok: true, data: { translations: [{ id: 1, text: "שלום" }], story_so_far: "" } };
+  };
+  const r = await tr.translateCuesGemini(src, working, [0, 1], false, { gemini, ...geminiFast, maxAttempts: 1 });
+  assert.equal(r.translatedCues, 1);
+  assert.deepEqual(r.failedCues, [1]);
+  assert.equal(batchCalls, 3);
+  assert.deepEqual(working[1].textLines, src[1].textLines);
+});
+
+test("translateCuesGemini: a bad key stops at once without retrying", async () => {
+  const src = geminiCues();
+  let n = 0;
+  const gemini = async () => { n++; return { ok: false, error: "HTTP 400 — API key not valid", fatal: true }; };
+  const r = await tr.translateCuesGemini(src, src.map(c => ({ ...c })), [0, 1, 2, 3], false, { gemini, ...geminiFast });
+  assert.equal(n, 1);
+  assert.equal(r.translatedCues, 0);
+  assert.match(r.stopped, /API key/);
+});

@@ -152,8 +152,16 @@
         <button class="primary" id="trRunBtn" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg><span>Translate to Hebrew</span></button>
         <label><input type="checkbox" id="trRtlCheck" checked> Fix RTL punctuation</label>
       </div>
+      <div class="actions" style="margin-top:12px;">
+        <label><input type="radio" name="trEngine" id="trEngineGemini" value="gemini" checked> Gemini — understands the scene (slower)</label>
+        <label><input type="radio" name="trEngine" id="trEngineGoogle" value="google"> Google Translate — line by line (fast)</label>
+      </div>
+      <div class="actions" id="trKeyRow" style="margin-top:8px;">
+        <label>Gemini API key: <input type="password" class="key-input" id="trKeyInput" placeholder="paste your Gemini API key" autocomplete="off" spellcheck="false"></label>
+      </div>
+      <div class="status-text" id="trKeyHint" style="display:block; margin-top:6px;">Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> — it's saved only in this browser. The model first reads the whole episode (characters, who is male or female, names), then translates about 250 lines at a time with that context. The free tier allows about 20 requests a day — roughly 5 episodes.</div>
       <div class="status-text" id="trEngineStatus" style="display:block; margin-top:12px;">Engine: —</div>
-      <div class="status-text" style="display:block; margin-top:4px;">Online translation sends the subtitle text to Google's translation service. If that fails, Chrome's on-device translator (when available) translates the rest locally. Your original file is never changed — the result is downloaded as a new <b>.he.srt</b> file.</div>
+      <div class="status-text" id="trGoogleHint" style="display:block; margin-top:4px;">Online translation sends the subtitle text to Google's translation service. If that fails, Chrome's on-device translator (when available) translates the rest locally. Your original file is never changed — the result is downloaded as a new <b>.he.srt</b> file.</div>
       <div class="banner warn" id="trWarnBanner"></div>
       <div class="banner err" id="trErrBanner"></div>
 

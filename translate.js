@@ -318,6 +318,247 @@ async function translateCues(cues, indices, rtlFix, deps){
   return { translatedCues: plans.size - failedCues.length, failedCues, googleUnits, localUnits, run };
 }
 
+// ---------------------------------------------------------------------------
+// Gemini engine: context-aware translation with a language model.
+// Google Translate sees each line alone, so it can't tell who speaks to whom
+// (Hebrew is gendered), splits sentences badly and translates idioms
+// literally. Here the model first reads the whole episode and writes a
+// reference sheet (characters + gender, glossary, tone), then translates in
+// batches with the sheet, a running "story so far", the previous translated
+// lines and a peek at the next lines.
+// ---------------------------------------------------------------------------
+// Measured 2026-11-07 on the free tier, 60 cues: gemini-3.5-flash with low
+// thinking ~8s; gemini-3.8-flash / gemini-flash-latest 130-190s (overloaded);
+// the Lite models are fast but translate noticeably worse. Google retires
+// models (2.5 is already closed to new keys), so a retired model falls back.
+const GEMINI_DEFAULT_MODEL = "gemini-3.5-flash";
+const GEMINI_FALLBACK_MODEL = "gemini-flash-latest";
+// Free tier (2026-11-07): Flash = 20 requests/day, 5/minute. 250 cues per
+// request = 3-4 requests per episode; Lite at 250 translated as well as at 80.
+const GEMINI_BATCH = 250;
+const GEMINI_PREV = 8;
+const GEMINI_NEXT = 5;
+
+const GEMINI_SHEET_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    synopsis: { type: "STRING" },
+    characters: { type: "ARRAY", items: { type: "OBJECT", properties: {
+      name: { type: "STRING" }, hebrew: { type: "STRING" },
+      gender: { type: "STRING", enum: ["male", "female", "unknown"] }, notes: { type: "STRING" },
+    }, required: ["name", "hebrew", "gender"] } },
+    glossary: { type: "ARRAY", items: { type: "OBJECT", properties: { en: { type: "STRING" }, he: { type: "STRING" } }, required: ["en", "he"] } },
+    tone: { type: "STRING" },
+  },
+  required: ["synopsis", "characters", "glossary", "tone"],
+};
+
+const GEMINI_BATCH_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    translations: { type: "ARRAY", items: { type: "OBJECT", properties: { id: { type: "INTEGER" }, text: { type: "STRING" } }, required: ["id", "text"] } },
+    story_so_far: { type: "STRING" },
+  },
+  required: ["translations", "story_so_far"],
+};
+
+const GEMINI_SHEET_SYSTEM = `You prepare a translator's reference sheet for a TV/movie episode whose English subtitles will be translated into Hebrew.
+Read the whole subtitle transcript and return:
+- synopsis: 4-8 sentences (in English) of what happens, who is involved, relationships.
+- characters: every named or recurring character, with the Hebrew spelling of the name (as Israeli subtitlers would write it), gender (inferred from pronouns, titles and context; "unknown" only if truly unclear), and short notes (role, relationships, how they address others).
+- glossary: recurring places, organizations, nicknames, invented terms and catchphrases, with the Hebrew rendering to use consistently. Never translate personal names literally.
+- tone: genre and register (e.g. "crime drama, lots of slang and profanity").`;
+
+const GEMINI_BATCH_SYSTEM = `You are a professional Israeli subtitle translator. Translate English subtitles into natural, fluent spoken Hebrew, as a skilled human subtitler would for Israeli TV.
+Rules:
+- Translate meaning, not words. Use the scene: who speaks, to whom, what is happening. Idioms, jokes and slang get natural Hebrew equivalents.
+- Hebrew is gendered. For every line work out the speaker and the addressee (use the characters list, the story so far and the surrounding lines) and use the correct gender for "you", verbs and adjectives, in first and second person. A group addressee is plural.
+- A sentence may be split across several cues: each cue keeps its own part, but the whole sentence must read correctly in Hebrew.
+- Keep the register: profanity stays profanity, formal stays formal.
+- Use the glossary and the Hebrew character names consistently.
+- Keep subtitles short and readable: at most 2 lines per cue, about 40 characters per line; separate lines with "\\n".
+- A cue whose lines start with "- " is a dialogue between speakers: keep one "- " line per speaker, in the same order.
+- Translate sound descriptions like [door slams], keeping the brackets. Keep symbols like ♪.
+- No niqqud, no HTML tags, no explanations.
+- Return exactly one translation for every id in the BATCH section, with the same ids. Never translate the context sections.
+- Also return story_so_far: an updated short English summary (max 6 sentences) of the story up to the end of this batch.`;
+
+// The text sent for one cue (markup already lifted out by cueToUnits).
+function geminiSourceText(plan){
+  return plan.dialogue ? plan.units.map(u => `- ${u}`).join("\n") : plan.units[0];
+}
+
+// A line longer than `max` becomes two, split at the space nearest the middle.
+function splitLongLine(line, max = 42){
+  if (line.length <= max) return [line];
+  const mid = line.length / 2;
+  let best = -1;
+  for (let i = line.indexOf(" "); i !== -1; i = line.indexOf(" ", i + 1)){
+    if (best === -1 || Math.abs(i - mid) < Math.abs(best - mid)) best = i;
+  }
+  if (best === -1) return [line];
+  return [line.slice(0, best).trim(), line.slice(best + 1).trim()];
+}
+
+// Turns the model's text for one cue back into subtitle lines, restoring the
+// lifted markup. null = unusable (empty).
+function geminiLines(plan, text, rtlFix){
+  let lines = String(text == null ? "" : text).replace(/\\n/g, "\n").split("\n")
+    .map(l => l.replace(/<[^>]+>/g, "").replace(/\{\\[^}]*\}/g, "").trim()).filter(Boolean);
+  if (!lines.length) return null;
+  if (plan.dialogue) lines = lines.map(l => l.startsWith("-") ? `- ${l.replace(/^-\s*/, "")}` : l);
+  else {
+    lines = lines.map(l => l.replace(/^-\s*/, ""));
+    // The model usually ignores the 2-line hint; split one long line itself.
+    if (lines.length === 1) lines = splitLongLine(lines[0]);
+  }
+  if (plan.wrapTag) lines = lines.map(l => `<${plan.wrapTag}>${l}</${plan.wrapTag}>`);
+  if (rtlFix) lines = lines.map(fixLine);
+  if (plan.prefix) lines[0] = plan.prefix + lines[0];
+  return lines;
+}
+
+// One generateContent call. Returns {ok, data} or {ok:false, error, retryMs,
+// daily, fatal}: `daily` = free daily quota used up, `fatal` = retrying won't help.
+async function fetchGemini({ key, model, system, user, schema, timeoutMs = 180000, thinkingLevel = "low" }){
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model || GEMINI_DEFAULT_MODEL)}:generateContent`;
+  const body = {
+    systemInstruction: { parts: [{ text: system }] },
+    contents: [{ role: "user", parts: [{ text: user }] }],
+    generationConfig: { temperature: 0.4, responseMimeType: "application/json", responseSchema: schema },
+  };
+  if (thinkingLevel) body.generationConfig.thinkingConfig = { thinkingLevel };
+  let res, json;
+  try{
+    res = await fetch(url, {
+      method: "POST", cache: "no-store", signal: AbortSignal.timeout(timeoutMs),
+      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify(body),
+    });
+    json = await res.json().catch(() => ({}));
+  } catch(e){
+    return { ok: false, error: e.name === "TimeoutError" ? "request timed out" : `network error (${e.message})` };
+  }
+  if (!res.ok){
+    const error = `HTTP ${res.status}${json.error && json.error.message ? ` — ${json.error.message.split("\n")[0]}` : ""}`;
+    if (res.status === 429 || res.status >= 500){
+      const raw = JSON.stringify(json);
+      const daily = res.status === 429 && /per ?day/i.test(raw);
+      const info = (json.error && json.error.details || []).find(d => d.retryDelay);
+      const retryMs = info ? parseFloat(info.retryDelay) * 1000 + 1000 : null;
+      return { ok: false, error, retryMs, daily };
+    }
+    // A model that doesn't take this thinking level: ask again without it.
+    if (res.status === 400 && thinkingLevel && /thinking/i.test(error)){
+      return fetchGemini({ key, model, system, user, schema, timeoutMs, thinkingLevel: null });
+    }
+    // A retired model: same request on the fallback model.
+    const retired = res.status === 404 || /no longer available/i.test(error);
+    if (retired && model !== GEMINI_FALLBACK_MODEL){
+      return fetchGemini({ key, model: GEMINI_FALLBACK_MODEL, system, user, schema, timeoutMs, thinkingLevel });
+    }
+    return { ok: false, error, fatal: true }; // bad key, bad request
+  }
+  const cand = json.candidates && json.candidates[0];
+  const parts = (cand && cand.content && cand.content.parts) || [];
+  const txt = parts.filter(p => !p.thought).map(p => p.text || "").join("");
+  if (!txt) return { ok: false, error: `empty response${cand && cand.finishReason ? ` (${cand.finishReason})` : ""}` };
+  try{ return { ok: true, data: JSON.parse(txt) }; }
+  catch(e){ return { ok: false, error: "response was not valid JSON" }; }
+}
+
+// Translates source cues at `indices` into `working` (same length, same
+// order). deps.gemini(system, user, schema) -> fetchGemini-style result.
+// deps.sheet: a reference sheet from an earlier run of the same file (reused
+// on retry). A cue is rewritten only when the model returned text for it.
+async function translateCuesGemini(sourceCues, working, indices, rtlFix, deps){
+  const {
+    gemini, onProgress = () => {}, onEvent = () => {},
+    sleep = ms => new Promise(r => setTimeout(r, ms)),
+    pacingMs = 12000, maxAttempts = 6, batchSize = GEMINI_BATCH,
+  } = deps;
+  let sheet = deps.sheet || null;
+  let story = deps.story || "";
+
+  // Every usable cue gets a plan (for context); id = position in the file + 1.
+  const plans = new Map();
+  sourceCues.forEach((c, i) => {
+    if (c.index == null || c.timestamp == null) return;
+    const plan = cueToUnits(c.textLines);
+    if (plan) plans.set(i, plan);
+  });
+  const usable = [...plans.keys()];
+  const line = i => `[${i + 1}] ${geminiSourceText(plans.get(i)).replace(/\n/g, " \\n ")}`;
+
+  const todo = indices.filter(i => plans.has(i)).sort((a, b) => a - b);
+  const done = new Set();
+  let progress = 0;
+  onProgress(0, todo.length);
+
+  let lastCall = 0, stopped = null;
+  async function call(system, user, schema){
+    for (let attempt = 1; attempt <= maxAttempts; attempt++){
+      const wait = lastCall + pacingMs - Date.now();
+      if (wait > 0) await sleep(wait);
+      lastCall = Date.now();
+      let r;
+      try{ r = await gemini(system, user, schema); }
+      catch(e){ r = { ok: false, error: e.message || String(e) }; }
+      if (r && r.ok) return r.data;
+      if (r.daily || r.fatal){ stopped = r.daily ? "the free daily Gemini quota is used up — try again tomorrow" : r.error; return null; }
+      const ms = r.retryMs || 5000 * attempt;
+      onEvent({ type: "request-failed", error: r.error, willRetry: attempt < maxAttempts, waitMs: ms });
+      if (attempt < maxAttempts) await sleep(ms);
+    }
+    return null;
+  }
+
+  if (!sheet && todo.length){
+    onEvent({ type: "sheet-start" });
+    const data = await call(GEMINI_SHEET_SYSTEM, `TRANSCRIPT:\n${usable.map(line).join("\n")}`, GEMINI_SHEET_SCHEMA);
+    if (data && Array.isArray(data.characters)){ sheet = data; onEvent({ type: "sheet-done", sheet }); }
+    else if (!stopped) onEvent({ type: "sheet-failed" });
+  }
+
+  for (let b = 0; b < todo.length && !stopped; b += batchSize){
+    const batch = todo.slice(b, b + batchSize);
+    const first = usable.indexOf(batch[0]), last = usable.indexOf(batch[batch.length - 1]);
+    const prev = usable.slice(Math.max(0, first - GEMINI_PREV), first);
+    const next = usable.slice(last + 1, last + 1 + GEMINI_NEXT);
+    onEvent({ type: "batch-start", n: b / batchSize + 1, of: Math.ceil(todo.length / batchSize) });
+
+    let missing = batch;
+    for (let tries = 0; tries < 3 && missing.length && !stopped; tries++){
+      const user = [
+        sheet ? `REFERENCE SHEET:\n${JSON.stringify(sheet)}` : "",
+        `STORY SO FAR:\n${story || "(start of episode)"}`,
+        prev.length ? `PREVIOUS LINES (context only):\n${prev.map(i => `${line(i)}\n   => ${working[i].textLines.join(" \\n ")}`).join("\n")}` : "",
+        `BATCH (translate every id):\n${missing.map(line).join("\n")}`,
+        next.length ? `NEXT LINES (context only, do not translate):\n${next.map(line).join("\n")}` : "",
+      ].filter(Boolean).join("\n\n");
+      const data = await call(GEMINI_BATCH_SYSTEM, user, GEMINI_BATCH_SCHEMA);
+      if (!data) break;
+      const want = new Set(missing);
+      for (const t of Array.isArray(data.translations) ? data.translations : []){
+        const i = Number(t && t.id) - 1;
+        if (!want.has(i) || done.has(i)) continue;
+        const lines = geminiLines(plans.get(i), t.text, rtlFix);
+        if (!lines) continue;
+        working[i] = { ...working[i], textLines: lines };
+        done.add(i);
+        onProgress(++progress, todo.length);
+      }
+      if (typeof data.story_so_far === "string" && data.story_so_far.trim()) story = data.story_so_far.trim();
+      missing = missing.filter(i => !done.has(i));
+      if (missing.length && tries < 2) onEvent({ type: "missing", count: missing.length });
+    }
+  }
+  if (stopped) onEvent({ type: "stopped", error: stopped });
+
+  const failedCues = todo.filter(i => !done.has(i));
+  return { translatedCues: done.size, failedCues, sheet, story, stopped };
+}
+
 function heOutputName(sourceName){
   return TR_SRT.srtStem(sourceName).replace(/\.(en|eng|english)$/i, "") + ".he.srt";
 }
@@ -334,11 +575,27 @@ if (typeof document !== "undefined") (function(){
     warn: $("trWarnBanner"), err: $("trErrBanner"),
     log: $("trLog"), logEmpty: $("trLogEmpty"), clearLogBtn: $("trClearLogBtn"),
     downloadBtn: $("trDownloadBtn"), downloadLabel: $("trDownloadLabel"), retryBtn: $("trRetryBtn"),
+    engGemini: $("trEngineGemini"), engGoogle: $("trEngineGoogle"),
+    keyRow: $("trKeyRow"), keyInput: $("trKeyInput"), keyHint: $("trKeyHint"), googleHint: $("trGoogleHint"),
   };
   if (!t.runBtn) return;
 
   const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const store = (k, v) => { try{ localStorage.setItem(k, v); } catch(e){} };
+  const read = k => { try{ return localStorage.getItem(k); } catch(e){ return null; } };
+
+  // Engine choice + Gemini key, remembered in this browser only.
+  t.keyInput.value = read("geminiApiKey") || "";
+  if (read("trEngine") === "google") t.engGoogle.checked = true;
+  const geminiModel = () => read("geminiModel") || GEMINI_DEFAULT_MODEL;
+  const engine = () => t.engGoogle.checked ? "google" : "gemini";
+  function syncEngineUi(){
+    const g = engine() === "gemini";
+    t.keyRow.hidden = !g; t.keyHint.hidden = !g; t.googleHint.hidden = g;
+    showEngine(g ? "gemini" : "google");
+  }
+  [t.engGemini, t.engGoogle].forEach(r => r.addEventListener("change", () => { store("trEngine", engine()); syncEngineUi(); }));
+  t.keyInput.addEventListener("input", () => store("geminiApiKey", t.keyInput.value.trim()));
 
   try{ t.rtlCheck.checked = localStorage.getItem("rtlFixEnabled") !== "0"; } catch(e){}
   t.rtlCheck.addEventListener("change", () => store("rtlFixEnabled", t.rtlCheck.checked ? "1" : "0"));
@@ -425,15 +682,19 @@ if (typeof document !== "undefined") (function(){
     "no-response": "on-device fallback didn't respond",
   }[local.status] || `on-device fallback: ${local.status}`);
   function showEngine(active){
+    if (active === "gemini"){
+      t.engineStatus.innerHTML = `Engine: <b class="eng-online">Gemini (${esc(geminiModel())}, online)</b> — text is sent to Google's Gemini`;
+      return;
+    }
     const main = active === "local"
       ? `<b class="eng-local">Chrome on-device (local)</b> — text stays on this computer`
       : `<b class="eng-online">Google Translate (online)</b> — text is sent to Google`;
     t.engineStatus.innerHTML = `Engine: ${main} · ${esc(localLabel())}`;
   }
-  showEngine("google");
+  syncEngineUi();
 
   let source = null;  // {name, cues, malformed}
-  let result = null;  // {cues, failedCues}
+  let result = null;  // {cues, failedCues, sheet, story}
 
   function resetOutput(){
     result = null;
@@ -477,6 +738,8 @@ if (typeof document !== "undefined") (function(){
     t.retryBtn.hidden = true;
     banner(t.warn, ""); banner(t.err, "");
     const working = isRetry ? result.cues.map(c => ({ ...c })) : source.cues.map(c => ({ ...c }));
+    const useGemini = isRetry ? result.engine === "gemini" : engine() === "gemini";
+    if (useGemini) return runGemini(indices, isRetry, working);
 
     // Check the fallback while we still hold this click's user activation:
     // creating the on-device translator may need it.
@@ -531,7 +794,74 @@ if (typeof document !== "undefined") (function(){
       return;
     }
 
-    result = { cues: working, failedCues: failed, text: out };
+    result = { cues: working, failedCues: failed, text: out, engine: "google" };
+    finishRun(working, failed, attempted, outcome.translatedCues, isRetry);
+  }
+
+  async function runGemini(indices, isRetry, working){
+    const key = t.keyInput.value.trim();
+    if (!key){
+      banner(t.err, `Paste your Gemini API key first (free at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>), or choose Google Translate.`);
+      t.runBtn.disabled = false;
+      return;
+    }
+    const model = geminiModel();
+    showEngine("gemini");
+    log(`📄 ${esc(source.name)} — ${isRetry ? `retrying ${indices.length} cue(s)` : `${indices.length} cues`} · Gemini`, "cyan");
+    if (!isRetry && source.malformed) log(`⚠ ${source.malformed} malformed block(s) without a valid index or timestamp — left unchanged in the output.`, "warn");
+    const setProgress = progressRow();
+
+    let outcome;
+    try{
+      outcome = await translateCuesGemini(source.cues, working, indices, t.rtlCheck.checked, {
+        gemini: (system, user, schema) => fetchGemini({ key, model, system, user, schema }),
+        sheet: isRetry ? result.sheet : null,
+        story: isRetry ? result.story : "",
+        onProgress: setProgress,
+        onEvent(ev){
+          if (ev.type === "sheet-start") log("Reading the whole episode for context…", "dim");
+          else if (ev.type === "sheet-done"){
+            const ch = ev.sheet.characters.slice(0, 12).map(c => `${esc(c.name)} (${c.gender === "female" ? "♀" : c.gender === "male" ? "♂" : "?"})`).join(", ");
+            log(`✓ Characters: ${ch || "none found"}`, "ok");
+          }
+          else if (ev.type === "sheet-failed") log("⚠ Couldn't build the episode summary — translating with nearby lines as context only.", "warn");
+          else if (ev.type === "batch-start") log(`Translating part ${ev.n} of ${ev.of}…`, "dim");
+          else if (ev.type === "request-failed") log(`· Gemini request failed (${esc(ev.error)})${ev.willRetry ? ` — retrying in ${Math.round(ev.waitMs / 1000)}s` : ""}`, "dim");
+          else if (ev.type === "missing") log(`· ${ev.count} line(s) missing from the answer — asking again`, "dim");
+          else if (ev.type === "stopped") log(`✗ Gemini stopped: ${esc(ev.error)}`, "err");
+        },
+      });
+    } catch(e){
+      log(`✗ Unexpected error: ${esc(e.message || e)}`, "err");
+      banner(t.err, "Translation failed unexpectedly. Nothing was downloaded — try again.");
+      t.runBtn.disabled = false;
+      return;
+    }
+
+    const failed = outcome.failedCues;
+    const attempted = outcome.translatedCues + failed.length;
+    if (outcome.translatedCues) log(`✓ ${outcome.translatedCues} cue(s) translated with Gemini`, "ok");
+    if (t.rtlCheck.checked && outcome.translatedCues) log(`✓ RTL punctuation fix applied`, "ok");
+
+    const out = TR_SRT.stringifySrt(working);
+    if (working.length !== source.cues.length || !out.trim()){
+      banner(t.err, "The output failed an integrity check (cue count changed). Nothing was downloaded.");
+      log("✗ Integrity check failed — output discarded", "err");
+      t.runBtn.disabled = false;
+      return;
+    }
+    result = { cues: working, failedCues: failed, text: out, engine: "gemini", sheet: outcome.sheet, story: outcome.story };
+    if (outcome.stopped && /HTTP 4(00|01|03|04)/.test(outcome.stopped) && outcome.translatedCues === 0){
+      banner(t.err, `Gemini refused the request: ${esc(outcome.stopped)}. Check the API key.`);
+      result = null;
+      t.runBtn.disabled = false;
+      return;
+    }
+    finishRun(working, failed, attempted, outcome.translatedCues, isRetry);
+  }
+
+  function finishRun(working, failed, attempted, translatedCues, isRetry){
+    const outcome = { translatedCues };
     const label = c => working[c].index || `#${c + 1}`;
 
     if (attempted > 0 && outcome.translatedCues === 0 && !isRetry){
@@ -576,5 +906,6 @@ if (typeof module !== "undefined" && module.exports){
     fixText, fixLine, cueToUnits, unitsToLines,
     buildBatchText, planBatches, splitBatchResponse, parseGoogleResponse,
     translateUnits, translateCues, heOutputName,
+    geminiSourceText, geminiLines, splitLongLine, fetchGemini, translateCuesGemini,
   };
 }
