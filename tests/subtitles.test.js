@@ -456,3 +456,63 @@ test("translateCuesGemini: a bad key stops at once without retrying", async () =
   assert.equal(r.translatedCues, 0);
   assert.match(r.stopped, /API key/);
 });
+
+// ---------------------------------------------------------------- reading speed
+const timedCues = () => srt.parseSrt([
+  "1", "00:00:01,000 --> 00:00:02,000", "x", "",
+  "2", "00:00:02,050 --> 00:00:03,000", "y", "",
+  "3", "00:00:10,000 --> 00:00:11,000", "z", "",
+].join("\n")).cues;
+
+test("readingBudget: counts the free time after the cue, capped, never below 12 chars", () => {
+  const cues = timedCues();
+  assert.deepEqual(tr.readingBudget(cues, 0), { seconds: 1, maxChars: 16 });   // next cue starts right away
+  assert.deepEqual(tr.readingBudget(cues, 1), { seconds: 2.45, maxChars: 39 }); // 0.95s +1.5s of the 7s gap
+  assert.deepEqual(tr.readingBudget(cues, 2), { seconds: 2.5, maxChars: 40 }); // last cue
+  assert.equal(tr.readingBudget([{ index: "1", timestamp: "bad", textLines: [] }], 0), null);
+});
+
+test("extendForReading: lengthens fast cues into free time only, never past the next cue", () => {
+  const cues = timedCues();
+  cues[0].textLines = ["שורה ארוכה מאוד שאי אפשר לקרוא בשנייה אחת"]; // no room after it
+  cues[1].textLines = ["<i>גם זו שורה ארוכה שצריכה עוד זמן</i>"];      // 7s of room
+  cues[2].textLines = ["קצר"];                                          // already readable
+  const n = tr.extendForReading(cues, [0, 1, 2]);
+  assert.equal(n, 1);
+  assert.equal(cues[0].timestamp, "00:00:01,000 --> 00:00:02,000");
+  const t = srt.parseTimestampLine(cues[1].timestamp);
+  assert.equal(t.startMs, 2050);
+  assert.ok(t.endMs > 3000 && t.endMs <= 4500);
+  assert.equal(cues[2].timestamp, "00:00:10,000 --> 00:00:11,000");
+});
+
+test("translateCuesGemini: batch lines carry the display time and character budget", async () => {
+  const src = geminiCues();
+  let batchUser = "";
+  const gemini = async (system, user) => {
+    if (user.startsWith("TRANSCRIPT")) return { ok: false, error: "x", fatal: true };
+    batchUser = user; return { ok: true, data: { translations: [], story_so_far: "" } };
+  };
+  await tr.translateCuesGemini(src, src.map(c => ({ ...c })), [0], false, { gemini, ...geminiFast, sheet: { characters: [] } });
+  assert.match(batchUser, /\[1\] \(2\.9s, max 46 chars\) Hello there, friend\./);
+});
+
+test("translateCuesGemini: cues over budget are sent once to be shortened; only shorter answers replace them", async () => {
+  const src = geminiCues();
+  const working = src.map(c => ({ ...c }));
+  const long = "זאת שורה ארוכה מאוד מאוד שבשום אופן אי אפשר לקרוא בזמן הקצר שיש לה על המסך";
+  let condenseUser = "";
+  const gemini = async (system, user) => {
+    if (user.startsWith("CUES TO SHORTEN") || user.includes("CUES TO SHORTEN")){
+      condenseUser = user;
+      return { ok: true, data: { translations: [{ id: 1, text: "שורה קצרה" }, { id: 2, text: long + " ועוד" }] } };
+    }
+    return { ok: true, data: { translations: [{ id: 1, text: long }, { id: 2, text: long }, { id: 3, text: "קצר" }], story_so_far: "" } };
+  };
+  const r = await tr.translateCuesGemini(src, working, [0, 1, 2], false, { gemini, ...geminiFast, sheet: { characters: [], glossary: [] } });
+  assert.match(condenseUser, /\[1\] \(max 46 chars\)/);
+  assert.doesNotMatch(condenseUser, /\[3\]/);
+  assert.equal(r.condensed, 1);
+  assert.deepEqual(working[0].textLines, ["שורה קצרה"]);
+  assert.equal(working[1].textLines.join(" ").replace(/<\/?i>/g, ""), long); // longer answer ignored
+});

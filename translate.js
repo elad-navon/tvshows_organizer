@@ -377,11 +377,80 @@ Rules:
 - Keep the register: profanity stays profanity, formal stays formal.
 - Use the glossary and the Hebrew character names consistently.
 - Keep subtitles short and readable: at most 2 lines per cue, about 40 characters per line; separate lines with "\\n".
+- Viewers must be able to read every cue in the time it is on screen. Each BATCH line shows its display time and a character budget, like "(1.5s, max 24 chars)". Stay within the budget (both lines together, spaces and punctuation included). When the full wording doesn't fit, condense as a professional subtitler would: drop fillers (well, uh, you know, okay, look), repetitions and names in direct address, and rephrase more briefly. Keep everything that matters to the plot.
+
 - A cue whose lines start with "- " is a dialogue between speakers: keep one "- " line per speaker, in the same order.
 - Translate sound descriptions like [door slams], keeping the brackets. Keep symbols like ♪.
 - No niqqud, no HTML tags, no explanations.
 - Return exactly one translation for every id in the BATCH section, with the same ids. Never translate the context sections.
 - Also return story_so_far: an updated short English summary (max 6 sentences) of the story up to the end of this batch.`;
+
+// --- Reading speed -----------------------------------------------------------
+// English subtitles are often near-verbatim, so in fast scenes a cue is on
+// screen ~1.5s with 40+ characters (Marshals S02E05: 105 of 680 cues above 17
+// chars/s, and almost none had free time after them). So the model gets a
+// character budget per cue and condenses, and after translation a cue that is
+// still too fast is shown longer when the gap before the next cue allows it.
+const READ_CPS = 16;          // target reading speed, characters per second
+const READ_MIN_GAP_MS = 100;  // keep cues at least this far apart
+const READ_MAX_EXTRA_MS = 1500;
+
+const visibleLength = lines => lines.map(l => l.replace(/<[^>]+>|\{\\[^}]*\}/g, "").trim()).join(" ").length;
+
+// Start time of the next timed cue after index i (null at the end).
+function nextStartMs(cues, i){
+  for (let j = i + 1; j < cues.length; j++){
+    const t = cues[j].timestamp && TR_SRT.parseTimestampLine(cues[j].timestamp);
+    if (t) return t.startMs;
+  }
+  return null;
+}
+
+// Display time (seconds, including what extendForReading may add) and the
+// character budget for cue i. null when the timestamp can't be read.
+function readingBudget(cues, i){
+  const t = cues[i].timestamp && TR_SRT.parseTimestampLine(cues[i].timestamp);
+  if (!t || t.endMs <= t.startMs) return null;
+  const next = nextStartMs(cues, i);
+  const room = next == null ? READ_MAX_EXTRA_MS : Math.max(0, Math.min(READ_MAX_EXTRA_MS, next - READ_MIN_GAP_MS - t.endMs));
+  const ms = t.endMs - t.startMs + room;
+  return { seconds: ms / 1000, maxChars: Math.min(84, Math.max(12, Math.floor(ms / 1000 * READ_CPS))) };
+}
+
+// Lengthens cues (in place) that are too fast to read, into the free time
+// before the next cue. Never moves a start time or overlaps the next cue.
+// Returns how many cues were lengthened.
+function extendForReading(cues, indices){
+  let n = 0;
+  for (const i of indices){
+    const c = cues[i];
+    const t = c && c.timestamp && TR_SRT.parseTimestampLine(c.timestamp);
+    if (!t || t.endMs <= t.startMs) continue;
+    const need = Math.ceil(visibleLength(c.textLines) / READ_CPS * 1000);
+    if (t.endMs - t.startMs >= need) continue;
+    const next = nextStartMs(cues, i);
+    let end = Math.min(t.startMs + need, t.endMs + READ_MAX_EXTRA_MS);
+    if (next != null) end = Math.min(end, next - READ_MIN_GAP_MS);
+    if (end <= t.endMs) continue;
+    cues[i] = { ...c, timestamp: TR_SRT.formatTimestampLine(t.startMs, end, t.rest) };
+    n++;
+  }
+  return n;
+}
+
+const GEMINI_CONDENSE_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    translations: { type: "ARRAY", items: { type: "OBJECT", properties: { id: { type: "INTEGER" }, text: { type: "STRING" } }, required: ["id", "text"] } },
+  },
+  required: ["translations"],
+};
+
+const GEMINI_CONDENSE_SYSTEM = `You are a professional Israeli subtitle editor. Each cue below has a Hebrew subtitle that is too long to read in the time it is on screen. Rewrite each one to fit its character budget (spaces and punctuation included).
+- Condense as a professional subtitler would: drop fillers, repetitions and names in direct address, use shorter words and phrasing. Keep everything that matters to the plot.
+- Keep the same meaning, speaker, gender forms, register and names as the current Hebrew.
+- Keep "\\n" line breaks for 2-line cues, and one "- " line per speaker in dialogue cues.
+- No niqqud, no HTML tags, no explanations. Return one text for every id.`;
 
 // The text sent for one cue (markup already lifted out by cueToUnits).
 function geminiSourceText(plan){
@@ -489,9 +558,14 @@ async function translateCuesGemini(sourceCues, working, indices, rtlFix, deps){
   });
   const usable = [...plans.keys()];
   const line = i => `[${i + 1}] ${geminiSourceText(plans.get(i)).replace(/\n/g, " \\n ")}`;
+  const batchLine = i => {
+    const b = readingBudget(sourceCues, i);
+    return b ? `[${i + 1}] (${b.seconds.toFixed(1)}s, max ${b.maxChars} chars) ${line(i).slice(line(i).indexOf("]") + 2)}` : line(i);
+  };
 
   const todo = indices.filter(i => plans.has(i)).sort((a, b) => a - b);
   const done = new Set();
+  const raw = new Map(); // model text per cue, before markup/RTL fix
   let progress = 0;
   onProgress(0, todo.length);
 
@@ -533,7 +607,7 @@ async function translateCuesGemini(sourceCues, working, indices, rtlFix, deps){
         sheet ? `REFERENCE SHEET:\n${JSON.stringify(sheet)}` : "",
         `STORY SO FAR:\n${story || "(start of episode)"}`,
         prev.length ? `PREVIOUS LINES (context only):\n${prev.map(i => `${line(i)}\n   => ${working[i].textLines.join(" \\n ")}`).join("\n")}` : "",
-        `BATCH (translate every id):\n${missing.map(line).join("\n")}`,
+        `BATCH (translate every id):\n${missing.map(batchLine).join("\n")}`,
         next.length ? `NEXT LINES (context only, do not translate):\n${next.map(line).join("\n")}` : "",
       ].filter(Boolean).join("\n\n");
       const data = await call(GEMINI_BATCH_SYSTEM, user, GEMINI_BATCH_SCHEMA);
@@ -545,6 +619,7 @@ async function translateCuesGemini(sourceCues, working, indices, rtlFix, deps){
         const lines = geminiLines(plans.get(i), t.text, rtlFix);
         if (!lines) continue;
         working[i] = { ...working[i], textLines: lines };
+        raw.set(i, String(t.text));
         done.add(i);
         onProgress(++progress, todo.length);
       }
@@ -553,10 +628,41 @@ async function translateCuesGemini(sourceCues, working, indices, rtlFix, deps){
       if (missing.length && tries < 2) onEvent({ type: "missing", count: missing.length });
     }
   }
+
+  // One extra request per run: the model mostly ignores the budget while
+  // translating 250 cues, so cues still well over budget are sent back to be
+  // condensed. A shorter answer replaces the cue; a failure keeps it as is.
+  let condensed = 0;
+  const over = stopped ? [] : [...raw.keys()].filter(i => {
+    const b = readingBudget(sourceCues, i);
+    return b && visibleLength(working[i].textLines) > b.maxChars * 1.1;
+  }).sort((a, b) => a - b);
+  if (over.length){
+    onEvent({ type: "condense-start", count: over.length });
+    const user = [
+      sheet ? `REFERENCE SHEET:\n${JSON.stringify({ characters: sheet.characters, glossary: sheet.glossary })}` : "",
+      `CUES TO SHORTEN:\n${over.map(i => {
+        const b = readingBudget(sourceCues, i);
+        return `[${i + 1}] (max ${b.maxChars} chars) EN: ${line(i).slice(line(i).indexOf("]") + 2)}\n   HE now (${visibleLength(working[i].textLines)} chars): ${raw.get(i).replace(/\n/g, " \\n ")}`;
+      }).join("\n")}`,
+    ].filter(Boolean).join("\n\n");
+    const data = await call(GEMINI_CONDENSE_SYSTEM, user, GEMINI_CONDENSE_SCHEMA);
+    const want = new Set(over);
+    for (const t of data && Array.isArray(data.translations) ? data.translations : []){
+      const i = Number(t && t.id) - 1;
+      if (!want.has(i)) continue;
+      want.delete(i);
+      const lines = geminiLines(plans.get(i), t.text, rtlFix);
+      if (!lines || visibleLength(lines) >= visibleLength(working[i].textLines)) continue;
+      working[i] = { ...working[i], textLines: lines };
+      condensed++;
+    }
+    onEvent({ type: "condense-done", count: condensed });
+  }
   if (stopped) onEvent({ type: "stopped", error: stopped });
 
   const failedCues = todo.filter(i => !done.has(i));
-  return { translatedCues: done.size, failedCues, sheet, story, stopped };
+  return { translatedCues: done.size, failedCues, sheet, story, stopped, condensed };
 }
 
 function heOutputName(sourceName){
@@ -828,6 +934,8 @@ if (typeof document !== "undefined") (function(){
           else if (ev.type === "batch-start") log(`Translating part ${ev.n} of ${ev.of}…`, "dim");
           else if (ev.type === "request-failed") log(`· Gemini request failed (${esc(ev.error)})${ev.willRetry ? ` — retrying in ${Math.round(ev.waitMs / 1000)}s` : ""}`, "dim");
           else if (ev.type === "missing") log(`· ${ev.count} line(s) missing from the answer — asking again`, "dim");
+          else if (ev.type === "condense-start") log(`Shortening ${ev.count} line(s) too long to read in time…`, "dim");
+          else if (ev.type === "condense-done") log(`✓ ${ev.count} line(s) shortened`, "ok");
           else if (ev.type === "stopped") log(`✗ Gemini stopped: ${esc(ev.error)}`, "err");
         },
       });
@@ -863,6 +971,16 @@ if (typeof document !== "undefined") (function(){
   function finishRun(working, failed, attempted, translatedCues, isRetry){
     const outcome = { translatedCues };
     const label = c => working[c].index || `#${c + 1}`;
+
+    // Cues too fast to read stay on screen longer where the next cue allows.
+    if (translatedCues > 0){
+      const timed = working.map((c, i) => i).filter(i => working[i].index != null && working[i].timestamp != null);
+      const extended = extendForReading(working, timed);
+      if (extended){
+        log(`✓ ${extended} fast cue(s) kept on screen longer, into the free time before the next cue`, "ok");
+        result.text = TR_SRT.stringifySrt(working);
+      }
+    }
 
     if (attempted > 0 && outcome.translatedCues === 0 && !isRetry){
       banner(t.err, `None of the ${attempted} cues could be translated. Nothing was downloaded — check your connection and try again.`);
@@ -907,5 +1025,6 @@ if (typeof module !== "undefined" && module.exports){
     buildBatchText, planBatches, splitBatchResponse, parseGoogleResponse,
     translateUnits, translateCues, heOutputName,
     geminiSourceText, geminiLines, splitLongLine, fetchGemini, translateCuesGemini,
+    readingBudget, extendForReading,
   };
 }
