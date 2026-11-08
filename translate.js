@@ -356,11 +356,33 @@ const GEMINI_SHEET_SCHEMA = {
 const GEMINI_BATCH_SCHEMA = {
   type: "OBJECT",
   properties: {
-    translations: { type: "ARRAY", items: { type: "OBJECT", properties: { id: { type: "INTEGER" }, text: { type: "STRING" } }, required: ["id", "text"] } },
+    // "en" comes before "text": copying the English line first anchors each
+    // Hebrew text to its own id (Doc S03E06: without it, two stretches of a
+    // 250-cue batch drifted one cue early where sentences spanned cues).
+    translations: { type: "ARRAY", items: { type: "OBJECT", properties: { id: { type: "INTEGER" }, en: { type: "STRING" }, text: { type: "STRING" } }, required: ["id", "en", "text"], propertyOrdering: ["id", "en", "text"] } },
     story_so_far: { type: "STRING" },
   },
   required: ["translations", "story_so_far"],
+  propertyOrdering: ["translations", "story_so_far"],
 };
+
+// Words of an English line for comparing the model's echo with the source.
+function echoWords(text){
+  return String(text || "").replace(/\\n/g, " ").replace(/<[^>]+>/g, " ").toLowerCase()
+    .replace(/[’']/g, "").split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+// True when the model's copy of the English ("en") is the line of that id:
+// the first words agree. An answer with no letters in the source (♪, numbers
+// only) or no echo at all is not judged.
+function echoMatches(source, en){
+  const a = echoWords(source), b = echoWords(en);
+  if (!a.length || en == null) return true;
+  const n = Math.min(3, a.length);
+  if (b.length < n) return false;
+  for (let k = 0; k < n; k++) if (a[k] !== b[k]) return false;
+  return true;
+}
 
 const GEMINI_SHEET_SYSTEM = `You prepare a translator's reference sheet for a TV/movie episode whose English subtitles will be translated into Hebrew.
 Read the whole subtitle transcript and return:
@@ -373,7 +395,8 @@ const GEMINI_BATCH_SYSTEM = `You are a professional Israeli subtitle translator.
 Rules:
 - Translate meaning, not words. Use the scene: who speaks, to whom, what is happening. Idioms, jokes and slang get natural Hebrew equivalents.
 - Hebrew is gendered. For every line work out the speaker and the addressee (use the characters list, the story so far and the surrounding lines) and use the correct gender for "you", verbs and adjectives, in first and second person. A group addressee is plural.
-- A sentence may be split across several cues: each cue keeps its own part, but the whole sentence must read correctly in Hebrew.
+- A sentence may be split across several cues: each cue keeps its own part, but the whole sentence must read correctly in Hebrew. Each id's Hebrew covers only that id's English: never move words into a neighboring id, and never repeat them there. When Hebrew word order differs, rephrase so every cue still says its own part at its own time.
+- For every id, first copy its English line into "en" exactly as given in the BATCH (without the time and budget), then write its Hebrew in "text".
 - Keep the register: profanity stays profanity, formal stays formal.
 - Use the glossary and the Hebrew character names consistently.
 - Keep subtitles short and readable: at most 2 lines per cue, about 40 characters per line; separate lines with "\\n".
@@ -613,9 +636,11 @@ async function translateCuesGemini(sourceCues, working, indices, rtlFix, deps){
       const data = await call(GEMINI_BATCH_SYSTEM, user, GEMINI_BATCH_SCHEMA);
       if (!data) break;
       const want = new Set(missing);
+      let drifted = 0;
       for (const t of Array.isArray(data.translations) ? data.translations : []){
         const i = Number(t && t.id) - 1;
         if (!want.has(i) || done.has(i)) continue;
+        if (!echoMatches(geminiSourceText(plans.get(i)), t.en)){ drifted++; continue; }
         const lines = geminiLines(plans.get(i), t.text, rtlFix);
         if (!lines) continue;
         working[i] = { ...working[i], textLines: lines };
@@ -625,6 +650,7 @@ async function translateCuesGemini(sourceCues, working, indices, rtlFix, deps){
       }
       if (typeof data.story_so_far === "string" && data.story_so_far.trim()) story = data.story_so_far.trim();
       missing = missing.filter(i => !done.has(i));
+      if (drifted) onEvent({ type: "drifted", count: drifted });
       if (missing.length && tries < 2) onEvent({ type: "missing", count: missing.length });
     }
   }
@@ -933,6 +959,7 @@ if (typeof document !== "undefined") (function(){
           else if (ev.type === "sheet-failed") log("⚠ Couldn't build the episode summary — translating with nearby lines as context only.", "warn");
           else if (ev.type === "batch-start") log(`Translating part ${ev.n} of ${ev.of}…`, "dim");
           else if (ev.type === "request-failed") log(`· Gemini request failed (${esc(ev.error)})${ev.willRetry ? ` — retrying in ${Math.round(ev.waitMs / 1000)}s` : ""}`, "dim");
+          else if (ev.type === "drifted") log(`· ${ev.count} line(s) came back under the wrong line — asking again`, "dim");
           else if (ev.type === "missing") log(`· ${ev.count} line(s) missing from the answer — asking again`, "dim");
           else if (ev.type === "condense-start") log(`Shortening ${ev.count} line(s) too long to read in time…`, "dim");
           else if (ev.type === "condense-done") log(`✓ ${ev.count} line(s) shortened`, "ok");
@@ -1024,7 +1051,7 @@ if (typeof module !== "undefined" && module.exports){
     fixText, fixLine, cueToUnits, unitsToLines,
     buildBatchText, planBatches, splitBatchResponse, parseGoogleResponse,
     translateUnits, translateCues, heOutputName,
-    geminiSourceText, geminiLines, splitLongLine, fetchGemini, translateCuesGemini,
+    geminiSourceText, geminiLines, splitLongLine, fetchGemini, translateCuesGemini, echoMatches,
     readingBudget, extendForReading,
   };
 }

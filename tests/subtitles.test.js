@@ -447,6 +447,37 @@ test("translateCuesGemini: asks again for missing ids, then reports what's still
   assert.deepEqual(working[1].textLines, src[1].textLines);
 });
 
+test("echoMatches: the first words of the copied English must be that id's line", () => {
+  assert.equal(tr.echoMatches("I'm headed \n to New York tomorrow", "I’m headed to New York tomorrow"), true);
+  assert.equal(tr.echoMatches("<i>- Wait, don't...</i>", "- wait don't"), true);
+  assert.equal(tr.echoMatches("I'm headed \n to New York tomorrow", "to check in on my clinical trial."), false);
+  assert.equal(tr.echoMatches("Okay.", ""), false);
+  assert.equal(tr.echoMatches("♪", "anything"), true);       // nothing to compare
+  assert.equal(tr.echoMatches("Okay.", undefined), true);    // no echo: not judged
+});
+
+test("translateCuesGemini: an answer whose English copy belongs to another id is asked again", async () => {
+  const src = geminiCues();
+  const working = src.map(c => ({ ...c }));
+  const events = [];
+  let batchCalls = 0;
+  const gemini = async (system, user) => {
+    if (user.startsWith("TRANSCRIPT")) return { ok: true, data: { synopsis: "", characters: [], glossary: [], tone: "" } };
+    batchCalls++;
+    const en = id => src[id - 1].textLines.join(" ");
+    // First answer: id 1 carries the text of the next cue (drifted).
+    const translations = batchCalls === 1
+      ? [{ id: 1, en: en(2), text: "סטה" }, { id: 2, en: en(2), text: "שתיים" }]
+      : [{ id: 1, en: en(1), text: "אחת" }];
+    return { ok: true, data: { translations, story_so_far: "" } };
+  };
+  const r = await tr.translateCuesGemini(src, working, [0, 1], false, { gemini, ...geminiFast, onEvent: e => events.push(e.type) });
+  assert.equal(batchCalls, 2);
+  assert.deepEqual(r.failedCues, []);
+  assert.deepEqual(working[0].textLines, ["אחת"]);
+  assert.ok(events.includes("drifted"));
+});
+
 test("translateCuesGemini: a bad key stops at once without retrying", async () => {
   const src = geminiCues();
   let n = 0;
