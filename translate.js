@@ -338,6 +338,8 @@ const GEMINI_FALLBACK_MODEL = "gemini-flash-latest";
 const GEMINI_BATCH = 250;
 const GEMINI_PREV = 8;
 const GEMINI_NEXT = 5;
+const GEMINI_NEAR = 3;   // context lines on each side of a line asked again
+const GEMINI_CARRY = 10; // this many left-out lines wait for the next batch
 
 const GEMINI_SHEET_SCHEMA = {
   type: "OBJECT",
@@ -406,6 +408,7 @@ Rules:
 - Translate sound descriptions like [door slams], keeping the brackets. Keep symbols like ♪.
 - No niqqud, no HTML tags, no explanations.
 - Return exactly one translation for every id in the BATCH section, with the same ids. Never translate the context sections.
+- BATCH ids are not always consecutive: a line left out earlier may be asked again. Use NEARBY LINES (the lines around it, with their Hebrew when already translated) to understand it and to keep its gender and wording consistent with them.
 - Also return story_so_far: an updated short English summary (max 6 sentences) of the story up to the end of this batch.`;
 
 // --- Reading speed -----------------------------------------------------------
@@ -617,19 +620,46 @@ async function translateCuesGemini(sourceCues, working, indices, rtlFix, deps){
     else if (!stopped) onEvent({ type: "sheet-failed" });
   }
 
+  // A line shown for context: its English, and its Hebrew once translated.
+  // (also lines translated by an earlier run, when this is a retry)
+  const translated = i => done.has(i) || working[i].textLines.join("\n") !== sourceCues[i].textLines.join("\n");
+  const contextLine = i => translated(i) ? `${line(i)}\n   => ${working[i].textLines.join(" \\n ")}` : line(i);
+  // Lines next to each BATCH line that the request doesn't already show. A
+  // whole batch has none (prev/next cover its edges); a line asked again on
+  // its own, or carried into the next batch, gets the lines around it.
+  const nearbyOf = (ids, shown) => {
+    const pos = new Map(usable.map((i, p) => [i, p]));
+    const out = new Set();
+    for (const i of ids){
+      const p = pos.get(i);
+      for (let q = Math.max(0, p - GEMINI_NEAR); q <= Math.min(usable.length - 1, p + GEMINI_NEAR); q++){
+        const j = usable[q];
+        if (!shown.has(j)) out.add(j);
+      }
+    }
+    return [...out].sort((a, b) => a - b);
+  };
+
+  let carry = []; // a few lines the previous batch left out, sent with this one
   for (let b = 0; b < todo.length && !stopped; b += batchSize){
     const batch = todo.slice(b, b + batchSize);
     const first = usable.indexOf(batch[0]), last = usable.indexOf(batch[batch.length - 1]);
     const prev = usable.slice(Math.max(0, first - GEMINI_PREV), first);
     const next = usable.slice(last + 1, last + 1 + GEMINI_NEXT);
+    const isLast = b + batchSize >= todo.length;
     onEvent({ type: "batch-start", n: b / batchSize + 1, of: Math.ceil(todo.length / batchSize) });
 
-    let missing = batch;
+    let missing = [...carry, ...batch].sort((x, y) => x - y);
+    carry = [];
     for (let tries = 0; tries < 3 && missing.length && !stopped; tries++){
+      const asked = new Set(missing);
+      const before = prev.filter(i => !asked.has(i)); // a carried line sits in prev
+      const nearby = nearbyOf(missing, new Set([...missing, ...before, ...next]));
       const user = [
         sheet ? `REFERENCE SHEET:\n${JSON.stringify(sheet)}` : "",
         `STORY SO FAR:\n${story || "(start of episode)"}`,
-        prev.length ? `PREVIOUS LINES (context only):\n${prev.map(i => `${line(i)}\n   => ${working[i].textLines.join(" \\n ")}`).join("\n")}` : "",
+        nearby.length ? `NEARBY LINES (context only, do not translate):\n${nearby.map(contextLine).join("\n")}` : "",
+        before.length ? `PREVIOUS LINES (context only):\n${before.map(contextLine).join("\n")}` : "",
         `BATCH (translate every id):\n${missing.map(batchLine).join("\n")}`,
         next.length ? `NEXT LINES (context only, do not translate):\n${next.map(line).join("\n")}` : "",
       ].filter(Boolean).join("\n\n");
@@ -651,6 +681,13 @@ async function translateCuesGemini(sourceCues, working, indices, rtlFix, deps){
       if (typeof data.story_so_far === "string" && data.story_so_far.trim()) story = data.story_so_far.trim();
       missing = missing.filter(i => !done.has(i));
       if (drifted) onEvent({ type: "drifted", count: drifted });
+      // A few left-out lines ride along with the next batch instead of
+      // costing a request of their own (the free tier allows 20 a day).
+      if (missing.length && missing.length <= GEMINI_CARRY && !isLast){
+        carry = missing;
+        onEvent({ type: "carried", count: missing.length });
+        break;
+      }
       if (missing.length && tries < 2) onEvent({ type: "missing", count: missing.length });
     }
   }
@@ -959,6 +996,7 @@ if (typeof document !== "undefined") (function(){
           else if (ev.type === "sheet-failed") log("⚠ Couldn't build the episode summary — translating with nearby lines as context only.", "warn");
           else if (ev.type === "batch-start") log(`Translating part ${ev.n} of ${ev.of}…`, "dim");
           else if (ev.type === "request-failed") log(`· Gemini request failed (${esc(ev.error)})${ev.willRetry ? ` — retrying in ${Math.round(ev.waitMs / 1000)}s` : ""}`, "dim");
+          else if (ev.type === "carried") log(`· ${ev.count} line(s) missing from the answer — they go with the next part`, "dim");
           else if (ev.type === "drifted") log(`· ${ev.count} line(s) came back under the wrong line — asking again`, "dim");
           else if (ev.type === "missing") log(`· ${ev.count} line(s) missing from the answer — asking again`, "dim");
           else if (ev.type === "condense-start") log(`Shortening ${ev.count} line(s) too long to read in time…`, "dim");

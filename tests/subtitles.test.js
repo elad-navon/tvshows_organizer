@@ -478,6 +478,47 @@ test("translateCuesGemini: an answer whose English copy belongs to another id is
   assert.ok(events.includes("drifted"));
 });
 
+test("translateCuesGemini: a few left-out lines go with the next batch, with the lines around them", async () => {
+  const src = geminiCues();
+  const working = src.map(c => ({ ...c }));
+  const users = [];
+  const events = [];
+  const gemini = async (system, user) => {
+    if (user.startsWith("TRANSCRIPT")) return { ok: true, data: { synopsis: "", characters: [], glossary: [], tone: "" } };
+    users.push(user);
+    const ids = [...user.split("BATCH")[1].matchAll(/^\[(\d+)\]/gm)].map(m => Number(m[1]));
+    // The first batch leaves out id 1.
+    const keep = users.length === 1 ? ids.filter(id => id !== 1) : ids;
+    return { ok: true, data: { translations: keep.map(id => ({ id, text: `שורה ${id}` })), story_so_far: "" } };
+  };
+  const r = await tr.translateCuesGemini(src, working, [0, 1, 2, 3], false, { gemini, ...geminiFast, batchSize: 2, onEvent: e => events.push(e.type) });
+  assert.equal(users.length, 2);                // no request of its own
+  assert.deepEqual(r.failedCues, []);
+  assert.deepEqual(working[0].textLines, ["שורה 1"]);
+  assert.ok(events.includes("carried"));
+  const second = users[1];
+  assert.match(second.split("BATCH")[1], /^\[1\]/m);       // asked in the next batch
+  assert.match(second, /\[2\][^\n]*\n   => [^\n]*שורה 2/);   // its translated neighbor is shown
+  assert.equal(second.match(/^\[1\]/gm).length, 1);          // and not shown twice
+});
+
+test("translateCuesGemini: a line asked again on its own comes with the lines around it", async () => {
+  const src = geminiCues();
+  const working = src.map(c => ({ ...c }));
+  const users = [];
+  const gemini = async (system, user) => {
+    if (user.startsWith("TRANSCRIPT")) return { ok: true, data: { synopsis: "", characters: [], glossary: [], tone: "" } };
+    users.push(user);
+    const ids = [...user.split("BATCH")[1].matchAll(/^\[(\d+)\]/gm)].map(m => Number(m[1]));
+    const keep = users.length === 1 ? ids.filter(id => id !== 2) : ids;
+    return { ok: true, data: { translations: keep.map(id => ({ id, text: `שורה ${id}` })), story_so_far: "" } };
+  };
+  await tr.translateCuesGemini(src, working, [0, 1, 2, 3], false, { gemini, ...geminiFast });
+  assert.equal(users.length, 2);                // last batch: asked again at once
+  assert.doesNotMatch(users[0], /NEARBY LINES/); // a whole batch needs none
+  assert.match(users[1], /NEARBY LINES[^]*\[1\][^]*=> שורה 1[^]*\[3\][^]*=> שורה 3/);
+});
+
 test("translateCuesGemini: a bad key stops at once without retrying", async () => {
   const src = geminiCues();
   let n = 0;
