@@ -519,6 +519,32 @@ test("translateCuesGemini: a line asked again on its own comes with the lines ar
   assert.match(users[1], /NEARBY LINES[^]*\[1\][^]*=> שורה 1[^]*\[3\][^]*=> שורה 3/);
 });
 
+test("hasForeignScript / stripForeignScript: stray letters of other scripts, unless the source has them", () => {
+  assert.equal(tr.hasForeignScript("התינוק הא可רש שלך", "your bastard baby"), true);
+  assert.equal(tr.hasForeignScript(".השم האמיתי שלי", "My real name"), true);
+  assert.equal(tr.hasForeignScript("- שלום, מה קורה? ♪ 20 דולר", "Hi"), false);
+  assert.equal(tr.hasForeignScript("הוא אמר שалом", "He said шалом"), false); // in the source
+  assert.equal(tr.stripForeignScript("התינוק הא可רש שלך"), "התינוק הארש שלך");
+});
+
+test("translateCuesGemini: a line with stray foreign letters is asked again, then cleaned", async () => {
+  const src = geminiCues();
+  const working = src.map(c => ({ ...c }));
+  const events = [];
+  let batchCalls = 0;
+  const gemini = async (system, user) => {
+    if (user.startsWith("TRANSCRIPT")) return { ok: true, data: { synopsis: "", characters: [], glossary: [], tone: "" } };
+    batchCalls++;
+    const ids = [...user.split("BATCH")[1].matchAll(/^\[(\d+)\]/gm)].map(m => Number(m[1]));
+    return { ok: true, data: { translations: ids.map(id => ({ id, text: id === 1 ? "שלו可ם" : `שורה ${id}` })), story_so_far: "" } };
+  };
+  const r = await tr.translateCuesGemini(src, working, [0, 1], false, { gemini, ...geminiFast, onEvent: e => events.push(e.type) });
+  assert.equal(batchCalls, 3);                    // asked again twice
+  assert.ok(events.includes("foreign"));
+  assert.deepEqual(r.failedCues, []);
+  assert.deepEqual(working[0].textLines, ["שלום"]); // last answer kept, cleaned
+});
+
 test("translateCuesGemini: a bad key stops at once without retrying", async () => {
   const src = geminiCues();
   let n = 0;

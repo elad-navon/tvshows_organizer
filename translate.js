@@ -373,6 +373,20 @@ const GEMINI_BATCH_SCHEMA = {
   propertyOrdering: ["translations", "story_so_far"],
 };
 
+// Letters of scripts that never belong in a Hebrew subtitle (Gemma and Lite
+// sometimes slip one in: "התינוק הא可רש", "השم", "אנדรียა"): Greek, Cyrillic,
+// Arabic, Armenian, Georgian, Indic, Thai, CJK, Korean. Letters the English line itself has are allowed.
+const FOREIGN_SCRIPT = /[\u0370-\u03FF\u0400-\u058F\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u0900-\u0DFF\u0E00-\u0E7F\u10A0-\u10FF\u1100-\u11FF\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\uFB50-\uFDFF\uFE70-\uFEFC]/gu;
+function hasForeignScript(text, source){
+  const found = String(text || "").match(FOREIGN_SCRIPT);
+  if (!found) return false;
+  const own = new Set(String(source || "").match(FOREIGN_SCRIPT) || []);
+  return found.some(ch => !own.has(ch));
+}
+function stripForeignScript(text){
+  return String(text || "").replace(FOREIGN_SCRIPT, "").replace(/[ \t]{2,}/g, " ").trim();
+}
+
 // Words of an English line for comparing the model's echo with the source.
 function echoWords(text){
   return String(text || "").replace(/\\n/g, " ").replace(/<[^>]+>/g, " ").toLowerCase()
@@ -673,12 +687,16 @@ async function translateCuesGemini(sourceCues, working, indices, rtlFix, deps){
       const data = await call(GEMINI_BATCH_SYSTEM, user, GEMINI_BATCH_SCHEMA);
       if (!data) break;
       const want = new Set(missing);
-      let drifted = 0;
+      let drifted = 0, foreign = 0;
       for (const t of Array.isArray(data.translations) ? data.translations : []){
         const i = Number(t && t.id) - 1;
         if (!want.has(i) || done.has(i)) continue;
         if (!echoMatches(geminiSourceText(plans.get(i)), t.en)){ drifted++; continue; }
-        const lines = geminiLines(plans.get(i), t.text, rtlFix);
+        // A stray letter from another script ("הא可רש") is asked again; on
+        // the last try the letters are dropped rather than lose the line.
+        const stray = hasForeignScript(t.text, geminiSourceText(plans.get(i)));
+        if (stray && tries < 2){ foreign++; continue; }
+        const lines = geminiLines(plans.get(i), stray ? stripForeignScript(t.text) : t.text, rtlFix);
         if (!lines) continue;
         working[i] = { ...working[i], textLines: lines };
         raw.set(i, String(t.text));
@@ -688,6 +706,7 @@ async function translateCuesGemini(sourceCues, working, indices, rtlFix, deps){
       if (typeof data.story_so_far === "string" && data.story_so_far.trim()) story = data.story_so_far.trim();
       missing = missing.filter(i => !done.has(i));
       if (drifted) onEvent({ type: "drifted", count: drifted });
+      if (foreign) onEvent({ type: "foreign", count: foreign });
       // A few left-out lines ride along with the next batch instead of
       // costing a request of their own (the free tier allows 20 a day).
       if (missing.length && missing.length <= GEMINI_CARRY && !isLast){
@@ -722,6 +741,7 @@ async function translateCuesGemini(sourceCues, working, indices, rtlFix, deps){
       const i = Number(t && t.id) - 1;
       if (!want.has(i)) continue;
       want.delete(i);
+      if (hasForeignScript(t.text, geminiSourceText(plans.get(i)))) continue;
       const lines = geminiLines(plans.get(i), t.text, rtlFix);
       if (!lines || visibleLength(lines) >= visibleLength(working[i].textLines)) continue;
       working[i] = { ...working[i], textLines: lines };
@@ -1014,6 +1034,7 @@ if (typeof document !== "undefined") (function(){
           else if (ev.type === "batch-start") log(`Translating part ${ev.n} of ${ev.of}…`, "dim");
           else if (ev.type === "request-failed") log(`· ${label} request failed (${esc(ev.error)})${ev.willRetry ? ` — retrying in ${Math.round(ev.waitMs / 1000)}s` : ""}`, "dim");
           else if (ev.type === "carried") log(`· ${ev.count} line(s) missing from the answer — they go with the next part`, "dim");
+          else if (ev.type === "foreign") log(`· ${ev.count} line(s) came back with stray non-Hebrew letters — asking again`, "dim");
           else if (ev.type === "drifted") log(`· ${ev.count} line(s) came back under the wrong line — asking again`, "dim");
           else if (ev.type === "missing") log(`· ${ev.count} line(s) missing from the answer — asking again`, "dim");
           else if (ev.type === "condense-start") log(`Shortening ${ev.count} line(s) too long to read in time…`, "dim");
@@ -1106,7 +1127,7 @@ if (typeof module !== "undefined" && module.exports){
     fixText, fixLine, cueToUnits, unitsToLines,
     buildBatchText, planBatches, splitBatchResponse, parseGoogleResponse,
     translateUnits, translateCues, heOutputName,
-    geminiSourceText, geminiLines, splitLongLine, fetchGemini, translateCuesGemini, echoMatches,
+    geminiSourceText, geminiLines, splitLongLine, fetchGemini, translateCuesGemini, echoMatches, hasForeignScript, stripForeignScript,
     readingBudget, extendForReading,
   };
 }
