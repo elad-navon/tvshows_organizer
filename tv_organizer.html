@@ -154,12 +154,14 @@
       </div>
       <div class="actions" style="margin-top:12px;">
         <label><input type="radio" name="trEngine" id="trEngineGemini" value="gemini" checked> Gemini — understands the scene (slower)</label>
+        <label><input type="radio" name="trEngine" id="trEngineGemma" value="gemma"> Gemma — no daily limit (slow)</label>
         <label><input type="radio" name="trEngine" id="trEngineGoogle" value="google"> Google Translate — line by line (fast)</label>
       </div>
       <div class="actions" id="trKeyRow" style="margin-top:8px;">
         <label>Gemini API key: <input type="password" class="key-input" id="trKeyInput" placeholder="paste your Gemini API key" autocomplete="off" spellcheck="false"></label>
       </div>
       <div class="status-text" id="trKeyHint" style="display:block; margin-top:6px;">Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> — it's saved only in this browser. The model first reads the whole episode (characters, who is male or female, names), then translates about 250 lines at a time with that context. Lines too long to read in time are then shortened in one more request. The free tier allows about 20 requests a day — roughly 4 episodes.</div>
+      <div class="status-text" id="trGemmaHint" style="display:block; margin-top:6px;" hidden>Uses the same Gemini key, with Google's open Gemma model and its own quota: about 14,400 requests a day, so it works when Gemini's daily quota is used up. It may only read 16,000 tokens a minute, so it translates 100 lines at a time with a one-minute pause between requests — about 20–30 minutes per episode. Hebrew is good, with a few more gender slips than Gemini.</div>
       <div class="status-text" id="trEngineStatus" style="display:block; margin-top:12px;">Engine: —</div>
       <div class="status-text" id="trGoogleHint" style="display:block; margin-top:4px;">Online translation sends the subtitle text to Google's translation service. If that fails, Chrome's on-device translator (when available) translates the rest locally. Your original file is never changed — the result is downloaded as a new <b>.he.srt</b> file.</div>
       <div class="banner warn" id="trWarnBanner"></div>

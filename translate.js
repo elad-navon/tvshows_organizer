@@ -332,6 +332,11 @@ async function translateCues(cues, indices, rtlFix, deps){
 // the Lite models are fast but translate noticeably worse. Google retires
 // models (2.5 is already closed to new keys), so a retired model falls back.
 const GEMINI_DEFAULT_MODEL = "gemini-3.5-flash";
+// Gemma via the same key and API (2026-11-08 free tier: 14,400 requests/day,
+// 30/minute, but only 16K tokens/minute). A 100-line request is ~8K tokens
+// in+out and took ~2 min; the whole-episode sheet read used 15.3K. Hence
+// smaller batches, a full minute between requests and a compact transcript.
+const GEMMA = { model: "gemma-4-31b-it", batchSize: 100, pacingMs: 65000, timeoutMs: 300000 };
 const GEMINI_FALLBACK_MODEL = "gemini-flash-latest";
 // Free tier (2026-11-07): Flash = 20 requests/day, 5/minute. 250 cues per
 // request = 3-4 requests per episode; Lite at 250 translated as well as at 80.
@@ -570,7 +575,7 @@ async function translateCuesGemini(sourceCues, working, indices, rtlFix, deps){
   const {
     gemini, onProgress = () => {}, onEvent = () => {},
     sleep = ms => new Promise(r => setTimeout(r, ms)),
-    pacingMs = 12000, maxAttempts = 6, batchSize = GEMINI_BATCH,
+    pacingMs = 12000, maxAttempts = 6, batchSize = GEMINI_BATCH, compactSheet = false,
   } = deps;
   let sheet = deps.sheet || null;
   let story = deps.story || "";
@@ -615,7 +620,9 @@ async function translateCuesGemini(sourceCues, working, indices, rtlFix, deps){
 
   if (!sheet && todo.length){
     onEvent({ type: "sheet-start" });
-    const data = await call(GEMINI_SHEET_SYSTEM, `TRANSCRIPT:\n${usable.map(line).join("\n")}`, GEMINI_SHEET_SCHEMA);
+    // compactSheet: plain lines without ids, for a model with a small per-minute token budget
+    const transcript = compactSheet ? usable.map(i => geminiSourceText(plans.get(i)).replace(/\n/g, " ")) : usable.map(line);
+    const data = await call(GEMINI_SHEET_SYSTEM, `TRANSCRIPT:\n${transcript.join("\n")}`, GEMINI_SHEET_SCHEMA);
     if (data && Array.isArray(data.characters)){ sheet = data; onEvent({ type: "sheet-done", sheet }); }
     else if (!stopped) onEvent({ type: "sheet-failed" });
   }
@@ -744,8 +751,9 @@ if (typeof document !== "undefined") (function(){
     warn: $("trWarnBanner"), err: $("trErrBanner"),
     log: $("trLog"), logEmpty: $("trLogEmpty"), clearLogBtn: $("trClearLogBtn"),
     downloadBtn: $("trDownloadBtn"), downloadLabel: $("trDownloadLabel"), retryBtn: $("trRetryBtn"),
-    engGemini: $("trEngineGemini"), engGoogle: $("trEngineGoogle"),
+    engGemini: $("trEngineGemini"), engGemma: $("trEngineGemma"), engGoogle: $("trEngineGoogle"),
     keyRow: $("trKeyRow"), keyInput: $("trKeyInput"), keyHint: $("trKeyHint"), googleHint: $("trGoogleHint"),
+    gemmaHint: $("trGemmaHint"),
   };
   if (!t.runBtn) return;
 
@@ -756,14 +764,16 @@ if (typeof document !== "undefined") (function(){
   // Engine choice + Gemini key, remembered in this browser only.
   t.keyInput.value = read("geminiApiKey") || "";
   if (read("trEngine") === "google") t.engGoogle.checked = true;
+  if (read("trEngine") === "gemma") t.engGemma.checked = true;
   const geminiModel = () => read("geminiModel") || GEMINI_DEFAULT_MODEL;
-  const engine = () => t.engGoogle.checked ? "google" : "gemini";
+  const engine = () => t.engGoogle.checked ? "google" : t.engGemma.checked ? "gemma" : "gemini";
   function syncEngineUi(){
-    const g = engine() === "gemini";
-    t.keyRow.hidden = !g; t.keyHint.hidden = !g; t.googleHint.hidden = g;
-    showEngine(g ? "gemini" : "google");
+    const e = engine();
+    t.keyRow.hidden = e === "google"; t.keyHint.hidden = e !== "gemini";
+    t.gemmaHint.hidden = e !== "gemma"; t.googleHint.hidden = e !== "google";
+    showEngine(e);
   }
-  [t.engGemini, t.engGoogle].forEach(r => r.addEventListener("change", () => { store("trEngine", engine()); syncEngineUi(); }));
+  [t.engGemini, t.engGemma, t.engGoogle].forEach(r => r.addEventListener("change", () => { store("trEngine", engine()); syncEngineUi(); }));
   t.keyInput.addEventListener("input", () => store("geminiApiKey", t.keyInput.value.trim()));
 
   try{ t.rtlCheck.checked = localStorage.getItem("rtlFixEnabled") !== "0"; } catch(e){}
@@ -851,8 +861,9 @@ if (typeof document !== "undefined") (function(){
     "no-response": "on-device fallback didn't respond",
   }[local.status] || `on-device fallback: ${local.status}`);
   function showEngine(active){
-    if (active === "gemini"){
-      t.engineStatus.innerHTML = `Engine: <b class="eng-online">Gemini (${esc(geminiModel())}, online)</b> — text is sent to Google's Gemini`;
+    if (active === "gemini" || active === "gemma"){
+      const name = active === "gemma" ? `Gemma (${GEMMA.model}, online)` : `Gemini (${esc(geminiModel())}, online)`;
+      t.engineStatus.innerHTML = `Engine: <b class="eng-online">${name}</b> — text is sent to Google's Gemini API`;
       return;
     }
     const main = active === "local"
@@ -907,8 +918,8 @@ if (typeof document !== "undefined") (function(){
     t.retryBtn.hidden = true;
     banner(t.warn, ""); banner(t.err, "");
     const working = isRetry ? result.cues.map(c => ({ ...c })) : source.cues.map(c => ({ ...c }));
-    const useGemini = isRetry ? result.engine === "gemini" : engine() === "gemini";
-    if (useGemini) return runGemini(indices, isRetry, working);
+    const kind = isRetry ? result.engine : engine();
+    if (kind === "gemini" || kind === "gemma") return runGemini(indices, isRetry, working, kind);
 
     // Check the fallback while we still hold this click's user activation:
     // creating the on-device translator may need it.
@@ -967,23 +978,29 @@ if (typeof document !== "undefined") (function(){
     finishRun(working, failed, attempted, outcome.translatedCues, isRetry);
   }
 
-  async function runGemini(indices, isRetry, working){
+  async function runGemini(indices, isRetry, working, kind){
+    const gemma = kind === "gemma";
+    const label = gemma ? "Gemma" : "Gemini";
     const key = t.keyInput.value.trim();
     if (!key){
       banner(t.err, `Paste your Gemini API key first (free at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>), or choose Google Translate.`);
       t.runBtn.disabled = false;
       return;
     }
-    const model = geminiModel();
-    showEngine("gemini");
-    log(`📄 ${esc(source.name)} — ${isRetry ? `retrying ${indices.length} cue(s)` : `${indices.length} cues`} · Gemini`, "cyan");
+    const model = gemma ? GEMMA.model : geminiModel();
+    showEngine(kind);
+    log(`📄 ${esc(source.name)} — ${isRetry ? `retrying ${indices.length} cue(s)` : `${indices.length} cues`} · ${label}`, "cyan");
+    if (gemma) log(`Gemma translates ${GEMMA.batchSize} lines per request with a one-minute pause between requests — keep this tab open (about 2–3 minutes per 100 lines).`, "dim");
     if (!isRetry && source.malformed) log(`⚠ ${source.malformed} malformed block(s) without a valid index or timestamp — left unchanged in the output.`, "warn");
     const setProgress = progressRow();
 
     let outcome;
     try{
       outcome = await translateCuesGemini(source.cues, working, indices, t.rtlCheck.checked, {
-        gemini: (system, user, schema) => fetchGemini({ key, model, system, user, schema }),
+        gemini: gemma
+          ? (system, user, schema) => fetchGemini({ key, model, system, user, schema, timeoutMs: GEMMA.timeoutMs, thinkingLevel: null })
+          : (system, user, schema) => fetchGemini({ key, model, system, user, schema }),
+        ...(gemma ? { batchSize: GEMMA.batchSize, pacingMs: GEMMA.pacingMs, compactSheet: true } : {}),
         sheet: isRetry ? result.sheet : null,
         story: isRetry ? result.story : "",
         onProgress: setProgress,
@@ -995,13 +1012,13 @@ if (typeof document !== "undefined") (function(){
           }
           else if (ev.type === "sheet-failed") log("⚠ Couldn't build the episode summary — translating with nearby lines as context only.", "warn");
           else if (ev.type === "batch-start") log(`Translating part ${ev.n} of ${ev.of}…`, "dim");
-          else if (ev.type === "request-failed") log(`· Gemini request failed (${esc(ev.error)})${ev.willRetry ? ` — retrying in ${Math.round(ev.waitMs / 1000)}s` : ""}`, "dim");
+          else if (ev.type === "request-failed") log(`· ${label} request failed (${esc(ev.error)})${ev.willRetry ? ` — retrying in ${Math.round(ev.waitMs / 1000)}s` : ""}`, "dim");
           else if (ev.type === "carried") log(`· ${ev.count} line(s) missing from the answer — they go with the next part`, "dim");
           else if (ev.type === "drifted") log(`· ${ev.count} line(s) came back under the wrong line — asking again`, "dim");
           else if (ev.type === "missing") log(`· ${ev.count} line(s) missing from the answer — asking again`, "dim");
           else if (ev.type === "condense-start") log(`Shortening ${ev.count} line(s) too long to read in time…`, "dim");
           else if (ev.type === "condense-done") log(`✓ ${ev.count} line(s) shortened`, "ok");
-          else if (ev.type === "stopped") log(`✗ Gemini stopped: ${esc(ev.error)}`, "err");
+          else if (ev.type === "stopped") log(`✗ ${label} stopped: ${esc(ev.error)}`, "err");
         },
       });
     } catch(e){
@@ -1013,7 +1030,7 @@ if (typeof document !== "undefined") (function(){
 
     const failed = outcome.failedCues;
     const attempted = outcome.translatedCues + failed.length;
-    if (outcome.translatedCues) log(`✓ ${outcome.translatedCues} cue(s) translated with Gemini`, "ok");
+    if (outcome.translatedCues) log(`✓ ${outcome.translatedCues} cue(s) translated with ${label}`, "ok");
     if (t.rtlCheck.checked && outcome.translatedCues) log(`✓ RTL punctuation fix applied`, "ok");
 
     const out = TR_SRT.stringifySrt(working);
@@ -1023,9 +1040,9 @@ if (typeof document !== "undefined") (function(){
       t.runBtn.disabled = false;
       return;
     }
-    result = { cues: working, failedCues: failed, text: out, engine: "gemini", sheet: outcome.sheet, story: outcome.story };
+    result = { cues: working, failedCues: failed, text: out, engine: kind, sheet: outcome.sheet, story: outcome.story };
     if (outcome.stopped && /HTTP 4(00|01|03|04)/.test(outcome.stopped) && outcome.translatedCues === 0){
-      banner(t.err, `Gemini refused the request: ${esc(outcome.stopped)}. Check the API key.`);
+      banner(t.err, `${label} refused the request: ${esc(outcome.stopped)}. Check the API key.`);
       result = null;
       t.runBtn.disabled = false;
       return;
