@@ -176,13 +176,33 @@ def parse_filename(filename: str):
     return series_file, series_folder, episode_tag, ext.lower()
 
 
+# A subtitle named for its language (X.en.srt, X.en.forced.srt) keeps it; any
+# other .srt is the Hebrew translation. Lowercase only, so an episode title
+# ending in "It" or "No" isn't a code. Same list as in helper.py and app.js.
+SUBTITLE_LANG_CODES = {
+  "he", "heb", "iw", "en", "eng", "fr", "fre", "fra", "de", "ger", "deu", "es", "spa",
+  "it", "ita", "ru", "rus", "ar", "ara", "pt", "por", "nl", "dut", "nld", "sv", "swe",
+  "no", "nor", "nb", "nob", "da", "dan", "fi", "fin", "pl", "pol", "tr", "tur", "el",
+  "gre", "ell", "hu", "hun", "cs", "cze", "ces", "ro", "rum", "ron", "ja", "jpn", "ko",
+  "kor", "zh", "chi", "zho", "und",
+}
+SUBTITLE_LANG_RE = re.compile(r"\.([a-z]{2,3})((?:\.(?:forced|sdh|\d+))*)\.srt$")
+
+
+def subtitle_lang_suffix(filename: str) -> str:
+    m = SUBTITLE_LANG_RE.search(filename)
+    if not m or m.group(1) not in SUBTITLE_LANG_CODES:
+        return ".he"
+    return (".he" if m.group(1) in ("he", "heb", "iw") else f".{m.group(1)}") + m.group(2)
+
+
 def build_new_filename(series_file: str, episode_tag: str, ext: str,
-                       episode_name: str | None = None) -> str:
+                       episode_name: str | None = None, lang_suffix: str = ".he") -> str:
     base = f"{series_file}.{episode_tag}"
     if episode_name:
         base = f"{base}.{episode_name}"
     if ext == ".srt":
-        return f"{base}.he{ext}"
+        return f"{base}{lang_suffix}{ext}"
     return f"{base}{ext}"
 
 
@@ -533,7 +553,9 @@ def collect_files(directory: str) -> list:
             "episode_tag":   episode_tag,
             "episode_name":  ep_name,
             "ext":           ext,
-            "new_name":      build_new_filename(series_file, episode_tag, ext, ep_name),
+            "lang_suffix":   subtitle_lang_suffix(entry.name),
+            "new_name":      build_new_filename(series_file, episode_tag, ext, ep_name,
+                                                subtitle_lang_suffix(entry.name)),
         })
     return found
 
@@ -584,7 +606,7 @@ def main():
             if key in video_name_map:
                 f["series_file"] = video_name_map[key]
                 f["new_name"]    = build_new_filename(
-                    f["series_file"], f["episode_tag"], f["ext"], f["episode_name"]
+                    f["series_file"], f["episode_tag"], f["ext"], f["episode_name"], f["lang_suffix"]
                 )
 
     # Show detected series

@@ -28,6 +28,12 @@ GET /autosync/progress for new log lines. Each synced SRT replaces the
 original in place; the original is first copied to an _original_subs
 subfolder. Requires:  pip install ffsubsync   and   ffmpeg on PATH.
 
+The "Extract subtitles" tab needs it too: POST /extract/scan lists each
+video's embedded subtitle tracks (ffprobe), and POST /extract writes the
+chosen text tracks next to the video as <name>.<lang>.srt (ffmpeg), fixing
+the punctuation of Hebrew tracks for players that show it on the wrong
+side. The page polls GET /extract/progress. Needs ffmpeg on PATH.
+
 Start with:  python helper.py
    or simply double-click start_helper.bat
 Stop with:   close this window, Ctrl+C, or just leave it idle — it shuts
@@ -153,6 +159,27 @@ def episode_tag(name):
     return f"S{int(season):02d}E{int(episode):02d}"
 
 
+# Language codes a subtitle file name may end with (X.en.srt, X.en.forced.srt).
+# Lowercase only, so an episode title ending in "It" or "No" isn't one.
+# Same list as SUBTITLE_LANG_CODES in app.js and tvshows_organizer.py.
+SUBTITLE_LANG_CODES = {
+    "he", "heb", "iw", "en", "eng", "fr", "fre", "fra", "de", "ger", "deu", "es", "spa",
+    "it", "ita", "ru", "rus", "ar", "ara", "pt", "por", "nl", "dut", "nld", "sv", "swe",
+    "no", "nor", "nb", "nob", "da", "dan", "fi", "fin", "pl", "pol", "tr", "tur", "el",
+    "gre", "ell", "hu", "hun", "cs", "cze", "ces", "ro", "rum", "ron", "ja", "jpn", "ko",
+    "kor", "zh", "chi", "zho", "und",
+}
+SUBTITLE_LANG_RE = re.compile(r"\.([a-z]{2,3})((?:\.(?:forced|sdh|\d+))*)\.srt$")
+
+
+def subtitle_lang(name):
+    """The language a subtitle's file name declares ("he" for Hebrew), or None."""
+    m = SUBTITLE_LANG_RE.search(name)
+    if not m or m.group(1) not in SUBTITLE_LANG_CODES:
+        return None
+    return "he" if m.group(1) in ("he", "heb", "iw") else m.group(1)
+
+
 def pair_videos_and_subs(names):
     """Match each video file name to its subtitle among `names` (one folder's
     top level). An SRT named after the video (X.srt or X.he.srt) wins;
@@ -178,7 +205,9 @@ def pair_videos_and_subs(names):
         if not tag:
             problems[v] = "no matching .srt (and no SxxExx tag in the name to match by)"
             continue
-        candidates = [s for s in subs if s not in used and episode_tag(s) == tag]
+        # X.en.srt (e.g. from the Extract tab) is that language, not the translation.
+        candidates = [s for s in subs if s not in used and episode_tag(s) == tag
+                      and subtitle_lang(s) in (None, "he")]
         if len(candidates) == 1:
             matched[v] = candidates[0]
             used.add(candidates[0])
@@ -993,9 +1022,9 @@ def start_autosync(folder):
     return job_id, None
 
 
-def cancel_autosync(job_id):
+def cancel_job(store, job_id):
     with autosync_lock:
-        job = autosync_jobs.get(job_id)
+        job = store.get(job_id)
         if not job:
             return False
         job["cancel"] = True
@@ -1007,6 +1036,322 @@ def cancel_autosync(job_id):
         else:
             proc.kill()
     return True
+
+
+# ---------------------------------------------------------------------------
+# Extract — embedded subtitle tracks to .srt files next to the video
+# ---------------------------------------------------------------------------
+# Picture subtitles (Blu-ray / DVD) can't become text without OCR.
+IMAGE_SUB_CODECS = {"hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub"}
+LANG_TO_SHORT = {
+    "eng": "en", "heb": "he", "iw": "he", "fre": "fr", "fra": "fr", "ger": "de", "deu": "de",
+    "spa": "es", "ita": "it", "rus": "ru", "ara": "ar", "por": "pt", "dut": "nl", "nld": "nl",
+    "swe": "sv", "nor": "no", "nob": "no", "nb": "no", "dan": "da", "fin": "fi", "pol": "pl",
+    "tur": "tr", "gre": "el", "ell": "el", "hun": "hu", "cze": "cs", "ces": "cs", "rum": "ro",
+    "ron": "ro", "jpn": "ja", "kor": "ko", "chi": "zh", "zho": "zh",
+}
+
+
+def short_lang(code):
+    code = (code or "").strip().lower()
+    code = LANG_TO_SHORT.get(code, code)
+    return code if code in SUBTITLE_LANG_CODES else "und"
+
+
+def _track_base(stem, lang, forced, sdh):
+    return f"{stem}.{lang}" + (".forced" if forced else ".sdh" if sdh else "")
+
+
+def _free_name(base, taken):
+    name, n = f"{base}.srt", 2
+    while name.lower() in taken:
+        name, n = f"{base}.{n}.srt", n + 1
+    return name
+
+
+def subtitle_tracks(stem, streams):
+    """Describes each subtitle stream (from ffprobe) and the file it would be
+    extracted to: <stem>.<lang>[.forced|.sdh][.N].srt."""
+    tracks, taken = [], set()
+    for s in streams:
+        if s.get("codec_type") != "subtitle":
+            continue
+        tags = s.get("tags") or {}
+        disp = s.get("disposition") or {}
+        title = tags.get("title", "")
+        codec = s.get("codec_name") or "unknown"
+        lang = short_lang(tags.get("language"))
+        forced = bool(disp.get("forced")) or "forced" in title.lower()
+        sdh = bool(disp.get("hearing_impaired")) or bool(re.search(r"\b(sdh|cc)\b|hearing", title, re.I))
+        name = _free_name(_track_base(stem, lang, forced, sdh), taken)
+        taken.add(name.lower())
+        if codec in TEXT_SUB_CODECS:
+            problem = None
+        elif codec in IMAGE_SUB_CODECS:
+            problem = "picture subtitles — can't become text without OCR"
+        else:
+            problem = f"{codec} can't be converted to .srt"
+        tracks.append({"index": s.get("index"), "codec": codec, "lang": lang,
+                       "language": tags.get("language", ""), "title": title,
+                       "forced": forced, "sdh": sdh, "default": bool(disp.get("default")),
+                       "target": name, "problem": problem})
+    return tracks
+
+
+# --- Hebrew punctuation ------------------------------------------------------
+# Embedded Hebrew subtitles keep their punctuation at the end of the line, as
+# typed. Many players lay a subtitle line out left to right, so the period
+# then shows up on the wrong side ("שלום." reads ".שלום"). The common fix —
+# the same one the Translate tab applies (fixText/fixLine in translate.js) —
+# moves the trailing punctuation to the start of the line.
+HEBREW_LETTER_RE = re.compile(r"[א-ת]")
+RTL_TRAILING_PUNCT_RE = re.compile(r"^(.*?)(\s*)([!?,.:;\-…]+)(\s*)$", re.S)
+RTL_TAG_WRAP_RE = re.compile(r"^(<[^>]+>)(.*?)(</[^>]+>)?$")
+LEADING_OVERRIDE_RE = re.compile(r"^(?:\{\\[^}]*\})+")
+PUNCT_CHARS = "!?,.:;-…"
+
+
+def rtl_fix_text(text):
+    text = text.strip()
+    m = RTL_TRAILING_PUNCT_RE.match(text) if text else None
+    if m and m.group(1).strip():
+        return m.group(3) + m.group(1).strip()
+    return text
+
+
+def rtl_fix_line(line):
+    line = line.strip()
+    ov = LEADING_OVERRIDE_RE.match(line)
+    prefix = ov.group(0) if ov else ""
+    line = line[len(prefix):].strip()
+    m = RTL_TAG_WRAP_RE.match(line)
+    if m:
+        return prefix + m.group(1) + rtl_fix_text(m.group(2)) + (m.group(3) or "")
+    return prefix + rtl_fix_text(line)
+
+
+def _bare(line):
+    return re.sub(r"<[^>]+>|\{\\[^}]*\}", "", line).strip()
+
+
+def is_hebrew_track(cues):
+    """Most lines have Hebrew letters (a track tagged "und" may still be Hebrew)."""
+    texts = [_bare(c["text"]) for c in cues if _bare(c["text"])]
+    return bool(texts) and sum(bool(HEBREW_LETTER_RE.search(t)) for t in texts) * 2 > len(texts)
+
+
+def needs_rtl_fix(cues):
+    """True when Hebrew lines mostly end with punctuation (as typed). A track
+    already fixed has it at the start instead, and is left alone."""
+    at_end = at_start = 0
+    for c in cues:
+        for line in c["text"].split("\n"):
+            bare = _bare(line)
+            if len(bare) < 2 or not HEBREW_LETTER_RE.search(bare):
+                continue
+            # A dialogue dash at the start isn't a sign either way.
+            head = bare.lstrip("- ")
+            if bare[-1] in PUNCT_CHARS:
+                at_end += 1
+            elif head and head[0] in PUNCT_CHARS:
+                at_start += 1
+    return at_end > at_start
+
+
+def rtl_fix_cues(cues):
+    """Returns (cues, number of lines changed); only lines with Hebrew letters."""
+    fixed, out = 0, []
+    for c in cues:
+        lines = []
+        for line in c["text"].split("\n"):
+            new = rtl_fix_line(line) if HEBREW_LETTER_RE.search(line) else line
+            fixed += new != line.strip()
+            lines.append(new)
+        out.append(dict(c, text="\n".join(lines)))
+    return out, fixed
+
+
+def _probe_streams(path, env):
+    """ffprobe's stream list; raises RuntimeError if the file can't be read."""
+    ffprobe = shutil.which("ffprobe", path=env["PATH"])
+    if not ffprobe:
+        raise RuntimeError("ffprobe was not found. Run:  winget install Gyan.FFmpeg   then try again.")
+    try:
+        out = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries",
+             "stream=index,codec_type,codec_name:stream_tags=language,title"
+             ":stream_disposition=forced,default,hearing_impaired",
+             "-of", "json", path],
+            capture_output=True, env=env, timeout=60,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        raise RuntimeError(str(e)) from e
+    if out.returncode != 0:
+        lines = out.stderr.decode("utf-8", errors="replace").strip().splitlines()
+        raise RuntimeError(lines[-1] if lines else "ffprobe couldn't read the file")
+    try:
+        return json.loads(out.stdout or b"{}").get("streams", [])
+    except ValueError as e:
+        raise RuntimeError(f"unexpected ffprobe output ({e})") from e
+
+
+def scan_embedded(folder, env):
+    """[{video, tracks, error}] for every video at the folder's top level."""
+    names = list_folder(folder)
+    existing = {n.lower() for n in names}
+    result = []
+    for video in sorted(n for n in names if os.path.splitext(n)[1].lower() in VIDEO_EXT):
+        try:
+            tracks = subtitle_tracks(os.path.splitext(video)[0], _probe_streams(os.path.join(folder, video), env))
+            error = None
+        except RuntimeError as e:
+            tracks, error = [], str(e)
+        for t in tracks:
+            t["exists"] = t["target"].lower() in existing
+        result.append({"video": video, "tracks": tracks, "error": error})
+    return result
+
+
+extract_jobs = {}  # job_id -> {"log", "done", "total", "extracted", "failed", "skipped", "cancel", "proc"}
+
+
+def _count(job, key, n=1):
+    with autosync_lock:
+        job[key] += n
+
+
+def _save_extracted(job, folder, stem, t, tmp_path, rtl_fix, taken):
+    """Writes one extracted track next to the video (fixing Hebrew
+    punctuation when asked). Returns False if the track was empty."""
+    with open(tmp_path, "rb") as f:
+        raw = f.read()
+    cues = parse_srt(decode_srt(raw))
+    if not cues:
+        _count(job, "failed")
+        _alog(job, "err", f"   ✗ Track {t['index']} ({t['lang']}) came out empty — not written")
+        return False
+    target, notes = t["target"], []
+    hebrew = is_hebrew_track(cues)
+    if hebrew and t["lang"] != "he":
+        # An untagged Hebrew track gets the name Auto Sync and Organize look for.
+        name = _free_name(_track_base(stem, "he", t["forced"], t["sdh"]), set())
+        if name.lower() not in taken and not os.path.exists(os.path.join(folder, name)):
+            target = name
+            notes.append("tagged as another language but it's Hebrew")
+    if hebrew and rtl_fix and needs_rtl_fix(cues):
+        cues, fixed = rtl_fix_cues(cues)
+        notes.append(f"punctuation fixed in {fixed} line(s)")
+    elif hebrew and rtl_fix:
+        notes.append("punctuation already on the right side")
+    dest = os.path.join(folder, target)
+    if hebrew:
+        # Same as Auto Sync's output: UTF-8 with BOM, the usual for Hebrew.
+        staged = dest + ".extract.tmp"
+        with open(staged, "w", encoding="utf-8-sig", newline="") as f:
+            f.write(format_srt(cues))
+        os.replace(staged, dest)
+    else:
+        shutil.move(tmp_path, dest)
+    taken.add(target.lower())
+    _count(job, "extracted")
+    _alog(job, "ok", f"   ✓ {target} — {len(cues)} lines" + (f" ({'; '.join(notes)})" if notes else ""))
+    return True
+
+
+def run_extract(job, folder, wanted, rtl_fix=True):
+    """wanted: {video: [stream index, ...]}. Tracks are written to a temp
+    folder first, so a stop or a failure never leaves a half-written file."""
+    run_start = time.monotonic()
+    try:
+        env = _tool_env()
+        ffmpeg = shutil.which("ffmpeg", path=env["PATH"])
+        if not ffmpeg:
+            _alog(job, "err", "ffmpeg was not found. Run:  winget install Gyan.FFmpeg   then try again.")
+            return
+        _alog(job, "cyan", f"Folder: {folder}")
+        videos = sorted(v for v in wanted if wanted[v])
+        _set(job, total=sum(len(set(wanted[v])) for v in videos))
+        for i, video in enumerate(videos, 1):
+            if job["cancel"]:
+                break
+            _alog(job, "cyan", f"[{i}/{len(videos)}] {video}")
+            video_path = os.path.join(folder, video)
+            stem = os.path.splitext(video)[0]
+            try:
+                tracks = {t["index"]: t for t in subtitle_tracks(stem, _probe_streams(video_path, env))}
+            except RuntimeError as e:
+                _count(job, "failed", len(set(wanted[video])))
+                _alog(job, "err", f"   ✗ Couldn't read the video: {e}")
+                continue
+            todo = []
+            for index in sorted(set(wanted[video])):
+                t = tracks.get(index)
+                if t is None or t["problem"]:
+                    _count(job, "skipped")
+                    _alog(job, "warn", f"   ⚠ Track {index} skipped — {t['problem'] if t else 'not in this file'}")
+                elif os.path.exists(os.path.join(folder, t["target"])):
+                    _count(job, "skipped")
+                    _alog(job, "warn", f"   ⚠ {t['target']} already exists — left as it is")
+                else:
+                    todo.append(t)
+            if not todo:
+                continue
+            tmp_dir = tempfile.mkdtemp(prefix="tvorg-extract-")
+            try:
+                # All of a video's tracks in one pass over the file.
+                argv = [ffmpeg, "-v", "error", "-nostdin", "-y", "-i", video_path]
+                for k, t in enumerate(todo):
+                    # A .srt track is copied as is; other text formats are converted.
+                    argv += ["-map", f"0:{t['index']}", "-c:s", "copy" if t["codec"] == "subrip" else "srt",
+                             os.path.join(tmp_dir, f"{k}.srt")]
+                t0 = time.monotonic()
+                try:
+                    _run_process(job, argv, env)
+                except RuntimeError as e:
+                    if job["cancel"]:
+                        _alog(job, "warn", "   ⚠ Stopped — nothing was written for this video")
+                        break
+                    _count(job, "failed", len(todo))
+                    _alog(job, "err", f"   ✗ Failed: {e}")
+                    continue
+                taken = {t["target"].lower() for t in tracks.values()}
+                for k, t in enumerate(todo):
+                    out = os.path.join(tmp_dir, f"{k}.srt")
+                    if not os.path.isfile(out):
+                        _count(job, "failed")
+                        _alog(job, "err", f"   ✗ Track {t['index']} ({t['lang']}) wasn't written by ffmpeg")
+                        continue
+                    _save_extracted(job, folder, stem, t, out, rtl_fix, taken)
+                _alog(job, "dim", f"   ({time.monotonic() - t0:.0f}s)")
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+    except OSError as e:
+        _alog(job, "err", f"✗ {e}")
+    finally:
+        with autosync_lock:
+            stopped = job["cancel"]
+            summary = (f"{'Stopped' if stopped else 'Done'}: {job['extracted']} extracted, "
+                       f"{job['failed']} failed, {job['skipped']} skipped "
+                       f"in {time.monotonic() - run_start:.0f}s.")
+        _alog(job, "warn" if (stopped or job["failed"]) else "ok", summary)
+        _set(job, done=True, proc=None)
+
+
+def start_extract(folder, wanted, rtl_fix=True):
+    """Returns (job_id, None) or (None, (http_status, error))."""
+    with autosync_lock:
+        if any(not j["done"] for j in extract_jobs.values()):
+            return None, (409, "an extraction is already running")
+        for job_id in [k for k, j in extract_jobs.items() if j["done"]]:
+            del extract_jobs[job_id]
+        job_id = uuid.uuid4().hex
+        job = {"log": [], "done": False, "total": 0, "extracted": 0, "failed": 0,
+               "skipped": 0, "cancel": False, "proc": None}
+        extract_jobs[job_id] = job
+    threading.Thread(target=run_extract, args=(job, folder, wanted, rtl_fix), daemon=True).start()
+    return job_id, None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1051,7 +1396,10 @@ class Handler(BaseHTTPRequestHandler):
                 with jobs_lock:
                     jobs.pop(job_id, None)
             return
-        if parsed.path == "/autosync/progress":
+        if parsed.path in ("/autosync/progress", "/extract/progress"):
+            is_extract = parsed.path == "/extract/progress"
+            store = extract_jobs if is_extract else autosync_jobs
+            counts = ("done", "total", "extracted" if is_extract else "synced", "failed", "skipped")
             query = parse_qs(parsed.query)
             job_id = query.get("job", [""])[0]
             try:
@@ -1059,9 +1407,9 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 since = 0
             with autosync_lock:
-                job = autosync_jobs.get(job_id)
+                job = store.get(job_id)
                 if job is not None:
-                    payload = {k: job[k] for k in ("done", "total", "synced", "failed", "skipped")}
+                    payload = {k: job[k] for k in counts}
                     payload["log"] = job["log"][since:]
                     payload["next"] = len(job["log"])
             if job is None:
@@ -1073,7 +1421,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         _touch()
-        if self.path not in ("/move", "/autosync", "/autosync/scan", "/autosync/cancel"):
+        if self.path not in ("/move", "/autosync", "/autosync/scan", "/autosync/cancel",
+                             "/extract", "/extract/scan", "/extract/cancel"):
             self._send_json(404, {"ok": False, "error": "not found"})
             return
         try:
@@ -1109,8 +1458,39 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_json(200, {"ok": True, "job": job_id})
             return
-        if self.path == "/autosync/cancel":
-            if cancel_autosync(str(data.get("job", ""))):
+        if self.path in ("/extract", "/extract/scan"):
+            folder = str(data.get("folder", "")).strip().strip('"')
+            if not folder or not os.path.isdir(folder):
+                self._send_json(404, {"ok": False, "error": f"folder not found: {folder}"})
+                return
+            if self.path == "/extract/scan":
+                try:
+                    videos = scan_embedded(folder, _tool_env())
+                except OSError as e:
+                    self._send_json(500, {"ok": False, "error": str(e)})
+                    return
+                self._send_json(200, {"ok": True, "videos": videos})
+                return
+            # Only plain file names at the folder's top level, never a path.
+            wanted = {}
+            for item in data.get("items") or []:
+                video = str(item.get("video", ""))
+                if os.path.basename(video) != video or not os.path.isfile(os.path.join(folder, video)):
+                    continue
+                wanted.setdefault(video, []).extend(
+                    i for i in item.get("streams") or [] if isinstance(i, int) and not isinstance(i, bool))
+            if not any(wanted.values()):
+                self._send_json(400, {"ok": False, "error": "no tracks selected"})
+                return
+            job_id, err = start_extract(folder, wanted, data.get("rtlFix", True) is not False)
+            if err:
+                self._send_json(err[0], {"ok": False, "error": err[1]})
+                return
+            self._send_json(200, {"ok": True, "job": job_id})
+            return
+        if self.path in ("/autosync/cancel", "/extract/cancel"):
+            store = extract_jobs if self.path == "/extract/cancel" else autosync_jobs
+            if cancel_job(store, str(data.get("job", ""))):
                 self._send_json(200, {"ok": True})
             else:
                 self._send_json(404, {"ok": False, "error": "unknown job"})

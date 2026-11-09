@@ -37,6 +37,7 @@
     <button class="tab-btn" id="tabTranslateBtn" type="button" role="tab" aria-selected="false" aria-controls="translateView" data-tab="translate">Translate subtitles</button>
     <button class="tab-btn" id="tabSyncBtn" type="button" role="tab" aria-selected="false" aria-controls="syncView" data-tab="sync">Shift subtitle timing</button>
     <button class="tab-btn" id="tabAutosyncBtn" type="button" role="tab" aria-selected="false" aria-controls="autosyncView" data-tab="autosync">Auto Sync</button>
+    <button class="tab-btn" id="tabExtractBtn" type="button" role="tab" aria-selected="false" aria-controls="extractView" data-tab="extract">Extract subtitles</button>
   </div>
 
   <div id="organizeView" role="tabpanel" aria-labelledby="tabOrganizeBtn">
@@ -324,6 +325,85 @@
     </div>
   </div>
 
+  <div id="extractView" role="tabpanel" aria-labelledby="tabExtractBtn" hidden>
+    <div class="panel">
+      <h2><span class="step">1</span> Folder <span class="rule"></span></h2>
+      <div class="actions">
+        <label for="exFolderInput">Folder path:</label>
+        <input type="text" class="key-input" id="exFolderInput" placeholder="e.g. C:\Elad\TV" autocomplete="off" spellcheck="false" style="width:360px;">
+        <span class="status-row" style="margin-bottom:0;"><span class="dot" id="exHelperDot"></span><span class="status-text" id="exHelperStatus">—</span></span>
+      </div>
+      <div class="status-text" style="display:block; margin-top:8px;">Lists the subtitle tracks inside every video in this folder (not its subfolders). The tracks you pick are saved next to the video as <b>&lt;video name&gt;.&lt;language&gt;.srt</b> — e.g. <code>.en.srt</code>, <code>.en.forced.srt</code>, <code>.he.srt</code>. Existing files are never overwritten. Picture subtitles (PGS / VobSub, common on Blu-ray and DVD) can't be turned into text and are shown greyed out.</div>
+      <div class="status-text" style="display:block; margin-top:4px;">Needs <b>start_helper.bat</b> running, plus <b>ffmpeg</b> (<code>winget install Gyan.FFmpeg</code>).</div>
+    </div>
+
+    <div class="panel">
+      <h2><span class="step">2</span> Scan <span class="rule"></span></h2>
+      <div class="actions">
+        <button class="primary" id="exScanBtn" type="button"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><span>Scan folder</span></button>
+      </div>
+      <div class="banner err" id="exScanErrBanner"></div>
+
+      <div class="stat-row">
+        <div class="stat-tile">
+          <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="m10 9 5 3-5 3Z"/></svg></div>
+          <div><div class="stat-value" id="exStatVideos">0</div><div class="stat-label">Videos</div></div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 15h4M14 15h4M6 11h12"/></svg></div>
+          <div><div class="stat-value" id="exStatTracks">0</div><div class="stat-label" id="exStatTracksLabel">Subtitle tracks</div></div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div>
+          <div><div class="stat-value" id="exStatScanTime">0s</div><div class="stat-label">Scan time</div></div>
+        </div>
+      </div>
+
+      <div id="exScanResults"></div>
+    </div>
+
+    <div class="panel">
+      <h2><span class="step">3</span> Extract <span class="rule"></span></h2>
+      <div class="actions">
+        <button class="execute" id="exRunBtn" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg><span id="exRunLabel">Extract</span></button>
+        <button class="ghost small" id="exStopBtn" type="button" disabled>Stop</button>
+        <label title="Players that lay subtitle lines out left to right show a Hebrew line's final period or question mark on the wrong side. Moves it to the start of the line — only in tracks that need it."><input type="checkbox" id="exRtlCheck" checked> Fix RTL punctuation in Hebrew tracks (when needed)</label>
+      </div>
+      <div class="banner err" id="exErrBanner"></div>
+
+      <div class="stat-row cols4">
+        <div class="stat-tile exec">
+          <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></div>
+          <div><div class="stat-value" id="exStatPending">0</div><div class="stat-label">Pending</div></div>
+        </div>
+        <div class="stat-tile exec">
+          <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+          <div><div class="stat-value" id="exStatExtracted">0</div><div class="stat-label">Extracted</div></div>
+        </div>
+        <div class="stat-tile exec">
+          <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/></svg></div>
+          <div><div class="stat-value" id="exStatFailed">0</div><div class="stat-label">Failed / skipped</div></div>
+        </div>
+        <div class="stat-tile exec">
+          <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l4 2"/></svg></div>
+          <div><div class="stat-value" id="exStatTime">–</div><div class="stat-label">Exec time</div></div>
+        </div>
+      </div>
+
+      <div class="log-head" style="margin-top:16px;">
+        <h2 style="margin:0;">Activity Log</h2>
+        <button class="ghost small" id="exClearLogBtn" type="button"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6"/></svg><span>Clear log</span></button>
+      </div>
+      <div class="log-box">
+        <div class="log-empty" id="exLogEmpty">
+          <div class="hint-title">No activity yet</div>
+          Scan a folder, pick the tracks, then press Extract
+        </div>
+        <div class="log-lines" id="exLog" style="display:none;"></div>
+      </div>
+    </div>
+  </div>
+
   <footer>TV Organizer <span>·</span> Browser version</footer>
 
 </div>
@@ -333,5 +413,6 @@
 <script src="sync.js"></script>
 <script src="app.js"></script>
 <script src="autosync.js"></script>
+<script src="extract.js"></script>
 </body>
 </html>

@@ -89,12 +89,30 @@ function parseFilename(filename){
   if (!m) return null;
   const [seriesFile, seriesFolder] = cleanSeriesName(m[1]);
   const episodeTag = normalizeEpisodeTag(m[2]);
-  return { seriesFile, seriesFolder, episodeTag, ext };
+  const langSuffix = ext === ".srt" ? subtitleLangSuffix(filename) : "";
+  return { seriesFile, seriesFolder, episodeTag, ext, langSuffix };
 }
-function buildNewFilename(seriesFile, episodeTag, ext, episodeName){
+// A subtitle named for its language (X.en.srt, X.en.forced.srt — e.g. from
+// the Extract tab) keeps it; any other .srt is the Hebrew translation.
+// Lowercase only, so an episode title ending in "It" or "No" isn't a code.
+// Same list as SUBTITLE_LANG_CODES in helper.py and tvshows_organizer.py.
+const SUBTITLE_LANG_CODES = new Set([
+  "he", "heb", "iw", "en", "eng", "fr", "fre", "fra", "de", "ger", "deu", "es", "spa",
+  "it", "ita", "ru", "rus", "ar", "ara", "pt", "por", "nl", "dut", "nld", "sv", "swe",
+  "no", "nor", "nb", "nob", "da", "dan", "fi", "fin", "pl", "pol", "tr", "tur", "el",
+  "gre", "ell", "hu", "hun", "cs", "cze", "ces", "ro", "rum", "ron", "ja", "jpn", "ko",
+  "kor", "zh", "chi", "zho", "und",
+]);
+const SUBTITLE_LANG_RE = /\.([a-z]{2,3})((?:\.(?:forced|sdh|\d+))*)\.srt$/;
+function subtitleLangSuffix(filename){
+  const m = SUBTITLE_LANG_RE.exec(filename);
+  if (!m || !SUBTITLE_LANG_CODES.has(m[1])) return ".he";
+  return (["he", "heb", "iw"].includes(m[1]) ? ".he" : `.${m[1]}`) + m[2];
+}
+function buildNewFilename(seriesFile, episodeTag, ext, episodeName, langSuffix = ".he"){
   let base = `${seriesFile}.${episodeTag}`;
   if (episodeName) base = `${base}.${episodeName}`;
-  return ext === ".srt" ? `${base}.he${ext}` : `${base}${ext}`;
+  return ext === ".srt" ? `${base}${langSuffix}${ext}` : `${base}${ext}`;
 }
 function isHebrew(text){ return HEBREW_RE.test(text); }
 function sanitizeEpisodeName(name){
@@ -507,7 +525,7 @@ els.themeToggle.addEventListener("click", () => {
   try { localStorage.setItem("uiTheme", next); } catch (e) {}
 });
 
-const TABS = ["organize", "translate", "sync", "autosync"];
+const TABS = ["organize", "translate", "sync", "autosync", "extract"];
 function setActiveTab(name){
   const tab = TABS.includes(name) ? name : "organize";
   for (const btn of document.querySelectorAll(".tab-btn")){
@@ -727,8 +745,8 @@ els.scanBtn.addEventListener("click", async () => {
     found.push({
       handle, originalName: name,
       seriesFile: parsed.seriesFile, seriesFolder: parsed.seriesFolder,
-      episodeTag: parsed.episodeTag, episodeName, ext: parsed.ext,
-      newName: buildNewFilename(parsed.seriesFile, parsed.episodeTag, parsed.ext, episodeName),
+      episodeTag: parsed.episodeTag, episodeName, ext: parsed.ext, langSuffix: parsed.langSuffix,
+      newName: buildNewFilename(parsed.seriesFile, parsed.episodeTag, parsed.ext, episodeName, parsed.langSuffix),
       size, selected: true
     });
   }
@@ -743,7 +761,7 @@ els.scanBtn.addEventListener("click", async () => {
       const key = `${f.seriesFolder}::${f.episodeTag}`;
       if (videoMap.has(key)){
         f.seriesFile = videoMap.get(key);
-        f.newName = buildNewFilename(f.seriesFile, f.episodeTag, f.ext, f.episodeName);
+        f.newName = buildNewFilename(f.seriesFile, f.episodeTag, f.ext, f.episodeName, f.langSuffix);
       }
     }
   }
