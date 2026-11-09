@@ -12,7 +12,7 @@
   const $ = id => document.getElementById(id);
   const x = {
     view: $("extractView"), folder: $("exFolderInput"),
-    helperDot: $("exHelperDot"), helperStatus: $("exHelperStatus"),
+    helperDot: $("exHelperDot"), helperStatus: $("exHelperStatus"), helperStart: $("exHelperStartBtn"),
     scanBtn: $("exScanBtn"), scanErr: $("exScanErrBanner"), scanResults: $("exScanResults"),
     videos: $("exStatVideos"), tracks: $("exStatTracks"), tracksLabel: $("exStatTracksLabel"), scanTime: $("exStatScanTime"),
     runBtn: $("exRunBtn"), runLabel: $("exRunLabel"), stopBtn: $("exStopBtn"), rtl: $("exRtlCheck"), err: $("exErrBanner"),
@@ -97,8 +97,10 @@
     const state = await pingHelper();
     x.helperDot.className = state === "ok" ? "dot ok" : "dot warn";
     x.helperStatus.textContent = state === "ok" ? "Helper connected" : helperProblemText(state);
+    showHelperStart(x.helperStart, state);
     return state;
   }
+  wireHelperStart(x.helperStart, x.helperStatus, refreshHelper);
   refreshHelper();
   setInterval(() => { if (!x.view.hidden && !jobId) refreshHelper(); }, 20000);
   document.getElementById("tabExtractBtn").addEventListener("click", () => { if (!jobId) refreshHelper(); });

@@ -391,7 +391,41 @@ async function pingHelper(){
 }
 const helperProblemText = state => state === "foreign"
   ? `Another program is using port ${HELPER_PORT} — close it, then run start_helper.bat again`
-  : "Helper not reachable — start start_helper.bat";
+  : "Helper not running — press Start helper";
+
+// A page can't run programs, but it can open a link Windows hands to one:
+// helper.py registers tvorg-helper:// for itself each time it starts, so
+// after one manual start_helper.bat the button below can start it.
+// Must match PROTOCOL in helper.py.
+const HELPER_PROTOCOL = "tvorg-helper";
+const HELPER_START_WAIT_MS = 30000; // includes the browser's "Open …?" prompt
+async function launchHelper(){
+  // Must run before any await, while the click still counts as the user's.
+  window.location.href = `${HELPER_PROTOCOL}://start`;
+  const until = Date.now() + HELPER_START_WAIT_MS;
+  while (Date.now() < until){
+    await new Promise(r => setTimeout(r, 700));
+    if (await pingHelper() === "ok") return "ok";
+  }
+  return pingHelper();
+}
+// Wires a "Start helper" button; refresh() re-checks and returns the state.
+// The button only shows while nothing answers on the port.
+function wireHelperStart(btn, statusEl, refresh){
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    btn.textContent = "Starting…";
+    statusEl.textContent = "Starting the helper — if the browser asks, allow it to open TV Organizer helper";
+    const state = await launchHelper();
+    btn.disabled = false;
+    btn.textContent = "Start helper";
+    await refresh();
+    if (state === "down"){
+      statusEl.textContent = "The helper didn't start. Run start_helper.bat once — after that this button can start it";
+    }
+  });
+}
+const showHelperStart = (btn, state) => { btn.hidden = state !== "down"; };
 function joinPath(...parts){
   return parts.map(p => String(p).replace(/[\\/]+$/, "")).join("\\");
 }
@@ -447,6 +481,7 @@ const els = {
   helperStatusRow: document.getElementById("helperStatusRow"),
   helperDot: document.getElementById("helperDot"),
   helperStatus: document.getElementById("helperStatus"),
+  helperStartBtn: document.getElementById("helperStartBtn"),
   helperPaths: document.getElementById("helperPaths"),
   helperSourcePath: document.getElementById("helperSourcePath"),
   helperLibraryPath: document.getElementById("helperLibraryPath"),
@@ -685,7 +720,10 @@ async function refreshHelperUI(){
   const state = await pingHelper();
   els.helperDot.className = state === "ok" ? "dot ok" : "dot warn";
   els.helperStatus.textContent = state === "ok" ? "Helper connected" : helperProblemText(state);
+  showHelperStart(els.helperStartBtn, state);
+  return state;
 }
+wireHelperStart(els.helperStartBtn, els.helperStatus, refreshHelperUI);
 // The helper shuts itself down after a stretch with no requests, so while
 // the page is open with the helper enabled, keep pinging it (this also keeps
 // the status dot honest). Closing the tab stops the pings and lets it idle out.

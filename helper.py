@@ -34,7 +34,9 @@ chosen text tracks next to the video as <name>.<lang>.srt (ffmpeg), fixing
 the punctuation of Hebrew tracks for players that show it on the wrong
 side. The page polls GET /extract/progress. Needs ffmpeg on PATH.
 
-Start with:  python helper.py
+Start with:  the page's "Start helper" button (works after one manual start,
+             which registers the tvorg-helper:// link it uses)
+   or        python helper.py
    or simply double-click start_helper.bat
 Stop with:   close this window, Ctrl+C, or just leave it idle — it shuts
              itself down automatically after IDLE_TIMEOUT_SECONDS with no
@@ -1539,10 +1541,59 @@ class HelperServer(ThreadingHTTPServer):
         super().server_bind()
 
 
+# The page's "Start helper" button opens a tvorg-helper:// link, and Windows
+# runs this script for it. Must match HELPER_PROTOCOL in app.js.
+PROTOCOL = "tvorg-helper"
+
+
+def register_protocol():
+    """Registers the tvorg-helper:// link for this user (no admin rights) to
+    start this script without a console window. Done on every start, so a
+    moved folder or a new Python is picked up. The link's text is never
+    passed on: any page may open such a link (the browser asks first), and
+    all it can do is start this helper, which only answers this app's pages."""
+    try:
+        import winreg
+    except ImportError:
+        return False
+    pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    exe = pythonw if os.path.isfile(pythonw) else sys.executable
+    command = f'"{exe}" "{os.path.abspath(__file__)}" --windowless'
+    base = rf"Software\Classes\{PROTOCOL}"
+    try:
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, base) as k:
+            winreg.SetValueEx(k, "", 0, winreg.REG_SZ, "URL:TV Organizer helper")
+            winreg.SetValueEx(k, "URL Protocol", 0, winreg.REG_SZ, "")
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, base + r"\shell\open\command") as k:
+            winreg.SetValueEx(k, "", 0, winreg.REG_SZ, command)
+        return True
+    except OSError:
+        return False
+
+
+def _already_running():
+    """True if this helper (not some other program) already has the port."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://{HOST}:{PORT}/ping", timeout=2) as res:
+            return json.loads(res.read()).get("app") == APP_ID
+    except (OSError, ValueError):
+        return False
+
+
 def main():
+    # Started from the page: no console, so the output goes to helper.log.
+    if "--windowless" in sys.argv[1:]:
+        log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "helper.log")
+        sys.stdout = sys.stderr = open(log_path, "w", encoding="utf-8", buffering=1)
+    if register_protocol():
+        print("The page's \"Start helper\" button can start this helper from now on.")
     try:
         server = HelperServer((HOST, PORT), Handler)
     except OSError as e:
+        if _already_running():
+            print("The helper is already running.")
+            sys.exit(0)
         # The OS message can be localized, so it isn't printed (it may not
         # be encodable on the console's codepage); the error number is enough.
         code = getattr(e, "winerror", None) or e.errno

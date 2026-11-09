@@ -11,7 +11,7 @@
   const $ = id => document.getElementById(id);
   const a = {
     view: $("autosyncView"), folder: $("asFolderInput"),
-    helperDot: $("asHelperDot"), helperStatus: $("asHelperStatus"),
+    helperDot: $("asHelperDot"), helperStatus: $("asHelperStatus"), helperStart: $("asHelperStartBtn"),
     scanBtn: $("asScanBtn"), scanErr: $("asScanErrBanner"), scanResults: $("asScanResults"),
     found: $("asStatFound"), foundLabel: $("asStatFoundLabel"), skipped: $("asStatSkipped"), scanTime: $("asStatScanTime"),
     runBtn: $("asRunBtn"), stopBtn: $("asStopBtn"), err: $("asErrBanner"),
@@ -60,8 +60,10 @@
     const state = await pingHelper();
     a.helperDot.className = state === "ok" ? "dot ok" : "dot warn";
     a.helperStatus.textContent = state === "ok" ? "Helper connected" : helperProblemText(state);
+    showHelperStart(a.helperStart, state);
     return state;
   }
+  wireHelperStart(a.helperStart, a.helperStatus, refreshHelper);
   // While this tab is open, keep the status honest — and the helper from
   // idling out (it shuts down after a stretch with no requests).
   refreshHelper();
