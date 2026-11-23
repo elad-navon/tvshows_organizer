@@ -623,62 +623,76 @@ function progressRow(){
   };
 }
 
-async function refreshFolderUI(){
-  if (sourceHandle){
-    els.sourceName.textContent = sourceHandle.name;
-    els.sourceName.classList.remove("empty");
-    const perm = await sourceHandle.queryPermission({ mode: "readwrite" });
-    if (perm === "granted"){
-      els.sourceDot.className = "dot ok"; els.sourceStatus.textContent = "Connected";
-      els.sourceBtnLabel.textContent = "Change folder…";
-    } else {
-      els.sourceDot.className = "dot warn"; els.sourceStatus.textContent = "Access permission required";
-      els.sourceBtnLabel.textContent = "Grant access";
-    }
-  } else {
-    els.sourceName.textContent = "No folder selected"; els.sourceName.classList.add("empty");
-    els.sourceDot.className = "dot"; els.sourceStatus.textContent = "—";
-    els.sourceBtnLabel.textContent = "Choose folder…";
-  }
-  if (libraryHandle){
-    els.libName.textContent = libraryHandle.name;
-    els.libName.classList.remove("empty");
-    const perm = await libraryHandle.queryPermission({ mode: "readwrite" });
-    if (perm === "granted"){
-      els.libDot.className = "dot ok"; els.libStatus.textContent = "Connected";
-      els.libBtnLabel.textContent = "Change folder…";
-    } else {
-      els.libDot.className = "dot warn"; els.libStatus.textContent = "Access permission required";
-      els.libBtnLabel.textContent = "Grant access";
-    }
-  } else {
-    els.libName.textContent = "No folder selected"; els.libName.classList.add("empty");
-    els.libDot.className = "dot"; els.libStatus.textContent = "—";
-    els.libBtnLabel.textContent = "Choose folder…";
-  }
-  // The library is only needed to move files there, not to rename them in place.
-  els.scanBtn.disabled = !(sourceHandle
-    && (await sourceHandle.queryPermission({mode:"readwrite"})) === "granted"
-    && (!libraryHandle || (await libraryHandle.queryPermission({mode:"readwrite"})) === "granted"));
+// A stored handle can point at a folder that's gone (unplugged drive, offline
+// share); queryPermission then throws instead of answering.
+async function folderPerm(handle){
+  try{ return await handle.queryPermission({ mode: "readwrite" }); }
+  catch(e){ console.warn("Stored folder is not reachable:", e); return "missing"; }
 }
+
+async function refreshFolderUI(){
+  const show = async (handle, nameEl, dotEl, statusEl, labelEl) => {
+    if (!handle){
+      nameEl.textContent = "No folder selected"; nameEl.classList.add("empty");
+      dotEl.className = "dot"; statusEl.textContent = "—";
+      labelEl.textContent = "Choose folder…";
+      return false;
+    }
+    nameEl.textContent = handle.name;
+    nameEl.classList.remove("empty");
+    const perm = await folderPerm(handle);
+    if (perm === "granted"){
+      dotEl.className = "dot ok"; statusEl.textContent = "Connected";
+      labelEl.textContent = "Change folder…";
+    } else if (perm === "missing"){
+      dotEl.className = "dot warn"; statusEl.textContent = "Folder not found — choose it again";
+      labelEl.textContent = "Choose folder…";
+    } else {
+      dotEl.className = "dot warn"; statusEl.textContent = "Access permission required";
+      labelEl.textContent = "Grant access";
+    }
+    return perm === "granted";
+  };
+  const sourceOk = await show(sourceHandle, els.sourceName, els.sourceDot, els.sourceStatus, els.sourceBtnLabel);
+  const libOk = await show(libraryHandle, els.libName, els.libDot, els.libStatus, els.libBtnLabel);
+  // The library is only needed to move files there, not to rename them in place.
+  els.scanBtn.disabled = !(sourceOk && (!libraryHandle || libOk));
+}
+
+// Kinds whose permission request already failed once: the next click goes
+// straight to the picker, since a request can use up the click and leave the
+// picker unable to open in the same click.
+const permissionFailed = new Set();
 
 async function connectFolder(kind){
   const isSource = kind === "source";
   const existing = isSource ? sourceHandle : libraryHandle;
-  if (existing){
-    // Try to just re-request permission first (no picker) if it's the same handle
-    const perm = await existing.queryPermission({ mode: "readwrite" });
-    if (perm !== "granted"){
-      const res = await existing.requestPermission({ mode: "readwrite" });
+  const statusEl = isSource ? els.sourceStatus : els.libStatus;
+  const dotEl = isSource ? els.sourceDot : els.libDot;
+  if (existing && !permissionFailed.has(kind)){
+    const perm = await folderPerm(existing);
+    if (perm === "prompt"){
+      let res = "denied";
+      try{ res = await existing.requestPermission({ mode: "readwrite" }); }
+      catch(e){ console.warn("requestPermission failed:", e); }
       if (res === "granted"){ await refreshFolderUI(); return; }
+      permissionFailed.add(kind);
     }
   }
   try{
     const handle = await window.showDirectoryPicker({ mode: "readwrite" });
+    permissionFailed.delete(kind);
     if (isSource){ sourceHandle = handle; await idbSet("source", handle); }
     else { libraryHandle = handle; await idbSet("library", handle); }
     await refreshFolderUI();
-  } catch(e){ /* user cancelled */ }
+  } catch(e){
+    if (e && e.name === "AbortError") return; // user cancelled
+    console.error("showDirectoryPicker failed:", e);
+    dotEl.className = "dot warn";
+    statusEl.textContent = e && e.name === "SecurityError"
+      ? "Couldn't open the folder picker — click again"
+      : `Couldn't open the folder picker: ${e && e.message || e}`;
+  }
 }
 
 els.sourceBtn.addEventListener("click", () => connectFolder("source"));
