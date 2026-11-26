@@ -73,11 +73,11 @@
     <h2><span class="step">2</span> Scan <span class="rule"></span></h2>
     <div class="actions">
       <button class="primary" id="scanBtn" disabled><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><span>Scan source folder</span></button>
-      <label><input type="checkbox" id="tmdbCheck" checked> Look up episode names on TMDB</label>
+      <label><input type="checkbox" id="tmdbCheck" checked> Look up episode names (TMDB, then TVmaze)</label>
       <label>TMDB API key: <input type="text" class="key-input" id="tmdbKeyInput" placeholder="paste your TMDB v3 API key" autocomplete="off" spellcheck="false"></label>
     </div>
     <div class="status-text" style="display:block; margin-top:8px;">Get a free key at <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">themoviedb.org/settings/api</a> — it's saved only in this browser, never uploaded anywhere.</div>
-    <div class="banner warn" id="tmdbBanner">Can't connect to TMDB (missing API key or a CORS block) — files will be organized without episode names.</div>
+    <div class="banner warn" id="tmdbBanner">Can't connect to TMDB (missing API key or a CORS block) — episode names come from TVmaze only.</div>
 
     <div class="stat-row cols4">
       <div class="stat-tile">

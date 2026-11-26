@@ -210,14 +210,9 @@ async function searchShowId(query, expectedYear){
     posterUrl: tmdbPosterUrl(best.poster_path),
   };
 }
-async function getShowId(seriesFolder){
-  if (tmdbShowCache.has(seriesFolder)) return tmdbShowCache.get(seriesFolder);
-  if (MANUAL_SHOW_OVERRIDES[seriesFolder] != null){
-    const result = await fetchSeriesById(MANUAL_SHOW_OVERRIDES[seriesFolder])
-      || { id: MANUAL_SHOW_OVERRIDES[seriesFolder], name: `${seriesFolder} (manual override)`, posterUrl: null };
-    tmdbShowCache.set(seriesFolder, result);
-    return result;
-  }
+// The search texts to try for a series folder, cleanest first, plus the year
+// the release name carried (if any). Shared by every episode-name source.
+function showSearchQueries(seriesFolder){
   // Try the "cleanest" queries first — a trailing year or country code is
   // usually part of the release name, not the show's actual title, and
   // searching with it still attached can return a confident-looking but
@@ -242,22 +237,50 @@ async function getShowId(seriesFolder){
   const words = seriesFolder.split(" ");
   if (words.length > 2) queries.push(words.slice(0,2).join(" "));
   const seen = new Set();
-  const uniq = queries.filter(q => !seen.has(q) && seen.add(q));
-
+  return { queries: queries.filter(q => !seen.has(q) && seen.add(q)), expectedYear };
+}
+async function getShowId(seriesFolder){
+  if (tmdbShowCache.has(seriesFolder)) return tmdbShowCache.get(seriesFolder);
+  if (MANUAL_SHOW_OVERRIDES[seriesFolder] != null){
+    const result = await fetchSeriesById(MANUAL_SHOW_OVERRIDES[seriesFolder])
+      || { id: MANUAL_SHOW_OVERRIDES[seriesFolder], name: `${seriesFolder} (manual override)`, posterUrl: null };
+    tmdbShowCache.set(seriesFolder, result);
+    return result;
+  }
+  const { queries, expectedYear } = showSearchQueries(seriesFolder);
   let result = null;
-  for (const q of uniq){
+  for (const q of queries){
     result = await searchShowId(q, expectedYear);
     if (result || tmdbBlocked) break;
   }
   tmdbShowCache.set(seriesFolder, result);
   return result;
 }
-async function fetchEpisodeName(seriesFolder, episodeTag, log){
-  if (tmdbBlocked) return null;
-  if (isHebrew(seriesFolder)) return null;
+// An episode name a source returned, or "" when it's only a placeholder
+// ("Episode 3", "TBA") or Hebrew (file names stay in English).
+function usableEpisodeName(raw){
+  const name = (raw || "").trim();
+  if (/^(Episode\s+#?\d+(\.\d+)?|TBA|TBD)$/i.test(name)) return "";
+  if (isHebrew(name)) return "";
+  return name;
+}
+function parseSeasonEpisode(episodeTag){
   const m = episodeTag.match(/^S(\d+)E(\d+)$/i);
-  if (!m) return null;
-  const season = parseInt(m[1],10), episode = parseInt(m[2],10);
+  return m ? { season: parseInt(m[1],10), episode: parseInt(m[2],10) } : null;
+}
+// Tries each source in turn — TMDB first, then TVmaze — and takes the first
+// real name. TVmaze needs no key, so names still come through when the TMDB
+// key is missing, TMDB doesn't know the show, or hasn't got the episode yet.
+async function fetchEpisodeName(seriesFolder, episodeTag, log){
+  if (isHebrew(seriesFolder)) return null;
+  if (!parseSeasonEpisode(episodeTag)) return null;
+  const name = (await fetchEpisodeNameTmdb(seriesFolder, episodeTag, log))
+    || (await fetchEpisodeNameTvmaze(seriesFolder, episodeTag, log));
+  return name ? sanitizeEpisodeName(name) : null;
+}
+async function fetchEpisodeNameTmdb(seriesFolder, episodeTag, log){
+  if (tmdbBlocked) return null;
+  const { season, episode } = parseSeasonEpisode(episodeTag);
   const show = await getShowId(seriesFolder);
   if (!show) { log(`[TMDB] ${seriesFolder} ${episodeTag} -> no matching series found`, "dim"); return null; }
   if (show.posterUrl) seriesPosterMap.set(seriesFolder, show.posterUrl);
@@ -267,15 +290,71 @@ async function fetchEpisodeName(seriesFolder, episodeTag, log){
   // has been added and is visible on the site — the translation only
   // shows up when the language you want is requested explicitly.
   const data = await tmdbGet(`https://api.themoviedb.org/3/tv/${show.id}/season/${season}/episode/${episode}?api_key=${TMDB_API_KEY}&language=en-US`);
-  let name = (data?.name || "").trim();
-  // Belt and suspenders: still possible if no English translation exists
-  // yet at all, so keep treating the placeholder as no name.
-  if (/^Episode\s+\d+$/i.test(name)) name = "";
+  // Belt and suspenders: the "Episode N" placeholder is still possible if no
+  // English translation exists yet at all, so it counts as no name.
+  const name = usableEpisodeName(data?.name);
   if (!name) { log(`[TMDB] ${seriesFolder} ${episodeTag} -> "${show.name}" found but no episode name yet`, "dim"); return null; }
-  if (isHebrew(name)) return null;
-  const safe = sanitizeEpisodeName(name);
-  log(`[TMDB] ${seriesFolder} ${episodeTag} -> "${show.name}" = ${safe}`, "dim");
-  return safe;
+  log(`[TMDB] ${seriesFolder} ${episodeTag} -> "${show.name}" = ${name}`, "dim");
+  return name;
+}
+
+// ---------------------------------------------------------------------------
+// TVmaze lookup — fallback source: free, no key, and allows browser requests
+// ---------------------------------------------------------------------------
+const tvmazeShowCache = new Map();
+
+async function tvmazeGet(url, retries=3){
+  for (let attempt=0; attempt<retries; attempt++){
+    try{
+      const res = await fetch(url, { cache: "no-store" });
+      // TVmaze allows about 20 calls per 10 seconds; wait it out and retry.
+      if (res.status === 429){
+        await new Promise(r => setTimeout(r, 2000*(attempt+1)));
+        continue;
+      }
+      if (!res.ok) return null;   // 404 = no such show/episode
+      return await res.json();
+    } catch(e){
+      return null;
+    }
+  }
+  return null;
+}
+async function tvmazeSearchShow(query, expectedYear){
+  const data = await tvmazeGet(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(query)}`);
+  if (!Array.isArray(data) || !data.length) return null;
+  // Same rules as the TMDB search: a matching premiere year wins over a
+  // higher score, and the pick must contain every word searched for.
+  let pool = data.filter(r => r?.show && looksLikeMatch(query, r.show.name || ""));
+  if (expectedYear){
+    const yearMatches = pool.filter(r => (r.show.premiered || "").slice(0,4) === String(expectedYear));
+    if (yearMatches.length) pool = yearMatches;
+  }
+  if (!pool.length) return null;
+  const best = pool.reduce((a,b) => (b.score||0) > (a.score||0) ? b : a).show;
+  return { id: best.id, name: best.name || "", posterUrl: best.image?.original || best.image?.medium || null };
+}
+async function tvmazeGetShow(seriesFolder){
+  if (tvmazeShowCache.has(seriesFolder)) return tvmazeShowCache.get(seriesFolder);
+  const { queries, expectedYear } = showSearchQueries(seriesFolder);
+  let result = null;
+  for (const q of queries){
+    result = await tvmazeSearchShow(q, expectedYear);
+    if (result) break;
+  }
+  tvmazeShowCache.set(seriesFolder, result);
+  return result;
+}
+async function fetchEpisodeNameTvmaze(seriesFolder, episodeTag, log){
+  const { season, episode } = parseSeasonEpisode(episodeTag);
+  const show = await tvmazeGetShow(seriesFolder);
+  if (!show) { log(`[TVmaze] ${seriesFolder} ${episodeTag} -> no matching series found`, "dim"); return null; }
+  if (show.posterUrl && !seriesPosterMap.has(seriesFolder)) seriesPosterMap.set(seriesFolder, show.posterUrl);
+  const data = await tvmazeGet(`https://api.tvmaze.com/shows/${show.id}/episodebynumber?season=${season}&number=${episode}`);
+  const name = usableEpisodeName(data?.name);
+  if (!name) { log(`[TVmaze] ${seriesFolder} ${episodeTag} -> "${show.name}" found but no episode name yet`, "dim"); return null; }
+  log(`[TVmaze] ${seriesFolder} ${episodeTag} -> "${show.name}" = ${name}`, "dim");
+  return name;
 }
 
 // ---------------------------------------------------------------------------
